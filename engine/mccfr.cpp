@@ -75,7 +75,6 @@ double MCCFR::traverse(const GameState& state, int traversing_player, Rng& rng, 
 }
 
 GameState MCCFR::sample_chance(const GameState& state, Rng& rng) {
-    // Deal community cards based on current street
     GameState next = state;
     Deck deck;
 
@@ -92,27 +91,19 @@ GameState MCCFR::sample_chance(const GameState& state, Rng& rng) {
 
     deck.shuffle(rng);
 
-    switch (state.street()) {
-        case Street::FLOP:
-            if (state.num_board_cards() == 0) {
-                Card c0 = deck.deal(), c1 = deck.deal(), c2 = deck.deal();
-                next = next.deal_flop(c0, c1, c2);
-            }
-            break;
-        case Street::TURN:
-            if (state.num_board_cards() == 3) {
-                Card c = deck.deal();
-                next = next.deal_turn(c);
-            }
-            break;
-        case Street::RIVER:
-            if (state.num_board_cards() == 4) {
-                Card c = deck.deal();
-                next = next.deal_river(c);
-            }
-            break;
-        default:
-            break;
+    // Deal the cards needed for the current street
+    if (next.street() == Street::FLOP && next.num_board_cards() < 3) {
+        Card c0 = deck.deal(), c1 = deck.deal(), c2 = deck.deal();
+        next = next.deal_flop(c0, c1, c2);
+    } else if (next.street() == Street::TURN && next.num_board_cards() < 4) {
+        next = next.deal_turn(deck.deal());
+    } else if (next.street() == Street::RIVER && next.num_board_cards() < 5) {
+        next = next.deal_river(deck.deal());
+    } else {
+        // All-in runout: current street's cards are already dealt but no one
+        // can act. Advance to the next street so the next traverse() call
+        // sees either another chance node (more cards to deal) or showdown.
+        next.advance_to_showdown();
     }
 
     return next;

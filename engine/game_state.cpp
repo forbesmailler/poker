@@ -132,13 +132,23 @@ bool GameState::is_chance_node() const {
     if (is_terminal())
         return false;
 
-    // Need to deal community cards
-    if (street_ == Street::PREFLOP && num_board_cards_ == 0 && is_round_complete() &&
-        num_active_players() == 0 && num_non_folded_players() > 1) {
+    // A chance node is any state where board cards need to be dealt
+    // before players can act on the current street.
+    if (street_ == Street::FLOP && num_board_cards_ < 3)
+        return true;
+    if (street_ == Street::TURN && num_board_cards_ < 4)
+        return true;
+    if (street_ == Street::RIVER && num_board_cards_ < 5)
+        return true;
+
+    // All-in runout: no one can act but we haven't reached showdown.
+    // Cards for the current street are dealt, but we need to advance
+    // to deal more streets. Treat as chance node so MCCFR advances.
+    if (num_active_players() == 0 && num_non_folded_players() > 1 && street_ != Street::SHOWDOWN) {
         return true;
     }
 
-    return is_round_complete() && !is_terminal() && num_non_folded_players() > 1;
+    return false;
 }
 
 int GameState::current_player() const {
@@ -382,10 +392,16 @@ int GameState::first_to_act_preflop() const {
     return next_active_player(bb_pos);
 }
 
+void GameState::advance_to_showdown() {
+    // Advance to the next street during an all-in runout.
+    // Called when cards for the current street are dealt but no one can act.
+    advance_street();
+}
+
 void GameState::advance_street() {
     switch (street_) {
         case Street::PREFLOP:
-            street_ = (num_board_cards_ >= 3) ? Street::FLOP : Street::FLOP;
+            street_ = Street::FLOP;
             break;
         case Street::FLOP:
             street_ = Street::TURN;

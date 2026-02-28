@@ -66,6 +66,9 @@ class GameState {
     int num_active_players() const;
     int num_non_folded_players() const;
 
+    // Advance street during all-in runout (no players can act)
+    void advance_to_showdown();
+
     // Hash of action history for info set key
     uint64_t action_history_hash() const { return action_hash_; }
 
