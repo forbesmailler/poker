@@ -11,7 +11,7 @@ namespace poker {
 
 // Simple timer for profiling
 class Timer {
-public:
+   public:
     Timer() : start_(std::chrono::high_resolution_clock::now()) {}
 
     void reset() { start_ = std::chrono::high_resolution_clock::now(); }
@@ -23,7 +23,7 @@ public:
 
     double elapsed_ms() const { return elapsed_seconds() * 1000.0; }
 
-private:
+   private:
     std::chrono::high_resolution_clock::time_point start_;
 };
 
@@ -68,4 +68,4 @@ void read_vector_binary(std::ifstream& in, std::vector<T>& vec) {
     }
 }
 
-} // namespace poker
+}  // namespace poker

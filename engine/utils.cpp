@@ -4,5 +4,4 @@
 // This file exists to satisfy the CMake source list and for
 // future non-template utility functions.
 
-namespace poker {
-} // namespace poker
+namespace poker {}  // namespace poker

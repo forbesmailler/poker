@@ -15,9 +15,7 @@ struct Action {
     ActionType type;
     int32_t amount;  // Chip amount (for BET); 0 for fold/check/call
 
-    bool operator==(const Action& o) const {
-        return type == o.type && amount == o.amount;
-    }
+    bool operator==(const Action& o) const { return type == o.type && amount == o.amount; }
     bool operator!=(const Action& o) const { return !(*this == o); }
 
     static Action fold() { return {ActionType::FOLD, 0}; }
@@ -31,4 +29,4 @@ struct BetSize {
     bool all_in;
 };
 
-} // namespace poker
+}  // namespace poker

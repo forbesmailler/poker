@@ -95,10 +95,7 @@ def cpp_value(val) -> str:
 
 def cpp_array(name: str, values: list, elem_type: str) -> str:
     items = ", ".join(cpp_value(v) for v in values)
-    return (
-        f"constexpr std::array<{elem_type}, {len(values)}> {name} = "
-        f"{{{{{items}}}}};"
-    )
+    return f"constexpr std::array<{elem_type}, {len(values)}> {name} = {{{{{items}}}}};"
 
 
 def generate_header(config: dict) -> str:
@@ -124,9 +121,7 @@ def generate_header(config: dict) -> str:
         "histogram_bins",
     ):
         val = abst.get(key, 0)
-        lines.append(
-            f"constexpr int {key.upper()} = {cpp_value(val)};"
-        )
+        lines.append(f"constexpr int {key.upper()} = {cpp_value(val)};")
 
     lines.append("")
     lines.append("// === Action ===")
@@ -159,7 +154,7 @@ def generate_header(config: dict) -> str:
         lines.append(f"constexpr int {key.upper()} = {cpp_value(val)};")
 
     lines.append(
-        f'constexpr const char* CHECKPOINT_DIR = {cpp_value(train.get("checkpoint_dir", "checkpoints"))};'
+        f"constexpr const char* CHECKPOINT_DIR = {cpp_value(train.get('checkpoint_dir', 'checkpoints'))};"
     )
     for key in ("dcfr_alpha", "dcfr_beta", "dcfr_gamma"):
         val = train.get(key, 0.0)
@@ -196,7 +191,7 @@ def main():
 
     # Only write if content changed
     if output_path.exists() and output_path.read_text() == header:
-        print(f"generated_config.h is up to date")
+        print("generated_config.h is up to date")
         return
 
     output_path.write_text(header)

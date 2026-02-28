@@ -26,24 +26,21 @@ enum HandCategory : int {
 };
 
 class HandEvaluator {
-public:
+   public:
     HandEvaluator();
 
     // Evaluate best 5-card hand from 7 cards
-    HandRank evaluate(Card c0, Card c1, Card c2,
-                      Card c3, Card c4, Card c5, Card c6) const;
+    HandRank evaluate(Card c0, Card c1, Card c2, Card c3, Card c4, Card c5, Card c6) const;
 
     // Evaluate from array (n = 5, 6, or 7)
     HandRank evaluate(const Card* cards, int n) const;
 
     static int category(HandRank r) { return r >> 12; }
-    static int compare(HandRank a, HandRank b) {
-        return static_cast<int>(a) - static_cast<int>(b);
-    }
+    static int compare(HandRank a, HandRank b) { return static_cast<int>(a) - static_cast<int>(b); }
 
     static const char* category_name(int cat);
 
-private:
+   private:
     // Flush lookup: indexed by bit pattern of ranks in flush suit (8192 entries)
     std::array<HandRank, 8192> flush_table_;
 
@@ -56,9 +53,8 @@ private:
     std::array<HandRank, HASH_TABLE_SIZE> hash_table_;
     std::array<uint32_t, HASH_TABLE_SIZE> hash_keys_;
 
-    static constexpr std::array<int, 13> RANK_PRIMES = {
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41
-    };
+    static constexpr std::array<int, 13> RANK_PRIMES = {2,  3,  5,  7,  11, 13, 17,
+                                                        19, 23, 29, 31, 37, 41};
 
     void init_tables();
     void init_flush_table();
@@ -74,4 +70,4 @@ private:
 // Thread-safe singleton
 const HandEvaluator& get_evaluator();
 
-} // namespace poker
+}  // namespace poker

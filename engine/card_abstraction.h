@@ -11,11 +11,11 @@ namespace poker {
 using Bucket = uint16_t;
 
 class CardAbstraction {
-public:
+   public:
     CardAbstraction();
 
-    Bucket get_bucket(Street street, Card hole0, Card hole1,
-                      const Card* board, int num_board_cards) const;
+    Bucket get_bucket(Street street, Card hole0, Card hole1, const Card* board,
+                      int num_board_cards) const;
 
     // Precompute all bucket assignments (expensive, run once)
     void build(int num_threads = 1);
@@ -27,9 +27,9 @@ public:
 
     bool is_built() const { return built_; }
 
-private:
+   private:
     // Preflop: 169 canonical hands (lossless)
-    std::vector<Bucket> preflop_buckets_; // size 169
+    std::vector<Bucket> preflop_buckets_;  // size 169
     // Post-flop: indexed by canonical index → bucket
     std::vector<Bucket> flop_buckets_;
     std::vector<Bucket> turn_buckets_;
@@ -45,4 +45,4 @@ private:
     void build_river_abstraction(int num_threads);
 };
 
-} // namespace poker
+}  // namespace poker

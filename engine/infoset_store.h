@@ -10,7 +10,7 @@
 namespace poker {
 
 class InfoSetStore {
-public:
+   public:
     explicit InfoSetStore(int num_shards = 256);
 
     InfoSetData& get_or_create(InfoSetKey key, int num_actions);
@@ -23,14 +23,13 @@ public:
     void load(const std::string& path);
 
     // DCFR discounting: multiply regrets and strategy sums
-    void apply_discounting(float positive_discount,
-                           float negative_discount,
+    void apply_discounting(float positive_discount, float negative_discount,
                            float strategy_discount);
 
     // Clear all data
     void clear();
 
-private:
+   private:
     struct Shard {
         mutable std::shared_mutex mutex;
         std::unordered_map<InfoSetKey, InfoSetData> data;
@@ -44,4 +43,4 @@ private:
     }
 };
 
-} // namespace poker
+}  // namespace poker

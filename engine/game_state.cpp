@@ -6,10 +6,8 @@
 
 namespace poker {
 
-GameState GameState::new_hand(
-    const std::array<int32_t, MAX_PLAYERS>& stacks,
-    int dealer_pos, int small_blind, int big_blind
-) {
+GameState GameState::new_hand(const std::array<int32_t, MAX_PLAYERS>& stacks, int dealer_pos,
+                              int small_blind, int big_blind) {
     GameState state;
     state.dealer_pos_ = dealer_pos;
     state.small_blind_ = small_blind;
@@ -120,26 +118,27 @@ int GameState::num_non_folded_players() const {
 }
 
 bool GameState::is_terminal() const {
-    if (street_ == Street::SHOWDOWN) return true;
+    if (street_ == Street::SHOWDOWN)
+        return true;
 
     // Only one non-folded player remaining
-    if (num_non_folded_players() <= 1) return true;
+    if (num_non_folded_players() <= 1)
+        return true;
 
     return false;
 }
 
 bool GameState::is_chance_node() const {
-    if (is_terminal()) return false;
+    if (is_terminal())
+        return false;
 
     // Need to deal community cards
-    if (street_ == Street::PREFLOP && num_board_cards_ == 0 &&
-        is_round_complete() && num_active_players() == 0 &&
-        num_non_folded_players() > 1) {
+    if (street_ == Street::PREFLOP && num_board_cards_ == 0 && is_round_complete() &&
+        num_active_players() == 0 && num_non_folded_players() > 1) {
         return true;
     }
 
-    return is_round_complete() && !is_terminal() &&
-           num_non_folded_players() > 1;
+    return is_round_complete() && !is_terminal() && num_non_folded_players() > 1;
 }
 
 int GameState::current_player() const {
@@ -150,15 +149,15 @@ Street GameState::street() const {
     return street_;
 }
 
-std::vector<Action> GameState::legal_actions(
-    const std::vector<BetSize>& allowed_bets
-) const {
+std::vector<Action> GameState::legal_actions(const std::vector<BetSize>& allowed_bets) const {
     std::vector<Action> actions;
 
-    if (is_terminal() || is_chance_node()) return actions;
+    if (is_terminal() || is_chance_node())
+        return actions;
 
     const auto& player = players_[current_player_];
-    if (player.status != PlayerStatus::ACTIVE) return actions;
+    if (player.status != PlayerStatus::ACTIVE)
+        return actions;
 
     int to_call = current_bet_ - player.bet_this_round;
 
@@ -178,7 +177,7 @@ std::vector<Action> GameState::legal_actions(
         int current_pot = pot();
         int min_raise = big_blind_;
         if (current_bet_ > 0) {
-            min_raise = current_bet_; // Minimum raise is the size of the last raise
+            min_raise = current_bet_;  // Minimum raise is the size of the last raise
         }
 
         for (const auto& bet_size : allowed_bets) {
@@ -186,20 +185,24 @@ std::vector<Action> GameState::legal_actions(
             if (bet_size.all_in) {
                 amount = player.stack + player.bet_this_round;
             } else {
-                amount = player.bet_this_round + to_call +
-                         static_cast<int>(std::round(bet_size.pot_fraction *
-                                                     (current_pot + to_call)));
+                amount =
+                    player.bet_this_round + to_call +
+                    static_cast<int>(std::round(bet_size.pot_fraction * (current_pot + to_call)));
             }
 
             // Clamp to valid range
             int min_total_bet = current_bet_ + min_raise;
             int max_total_bet = player.stack + player.bet_this_round;
 
-            if (amount < min_total_bet) amount = min_total_bet;
-            if (amount > max_total_bet) amount = max_total_bet;
+            if (amount < min_total_bet)
+                amount = min_total_bet;
+            if (amount > max_total_bet)
+                amount = max_total_bet;
 
-            if (amount <= current_bet_) continue; // Not a valid raise
-            if (amount > max_total_bet) continue; // Can't afford
+            if (amount <= current_bet_)
+                continue;  // Not a valid raise
+            if (amount > max_total_bet)
+                continue;  // Can't afford
 
             // Avoid duplicate bet sizes
             bool duplicate = false;
@@ -220,8 +223,7 @@ std::vector<Action> GameState::legal_actions(
             if (all_in_amount > current_bet_) {
                 bool has_all_in = false;
                 for (const auto& a : actions) {
-                    if (a.type == ActionType::BET &&
-                        a.amount == all_in_amount) {
+                    if (a.type == ActionType::BET && a.amount == all_in_amount) {
                         has_all_in = true;
                         break;
                     }
@@ -233,14 +235,12 @@ std::vector<Action> GameState::legal_actions(
         }
 
         // Sort bet actions by amount
-        std::sort(actions.begin(), actions.end(),
-                  [](const Action& a, const Action& b) {
-                      if (a.type != b.type) {
-                          return static_cast<int>(a.type) <
-                                 static_cast<int>(b.type);
-                      }
-                      return a.amount < b.amount;
-                  });
+        std::sort(actions.begin(), actions.end(), [](const Action& a, const Action& b) {
+            if (a.type != b.type) {
+                return static_cast<int>(a.type) < static_cast<int>(b.type);
+            }
+            return a.amount < b.amount;
+        });
     }
 
     return actions;
@@ -251,10 +251,8 @@ GameState GameState::apply_action(const Action& action) const {
     auto& player = next.players_[next.current_player_];
 
     // Update action hash
-    next.action_hash_ ^= static_cast<uint64_t>(action.type) <<
-        (next.num_actions_this_round_ * 4);
-    next.action_hash_ = next.action_hash_ * 2654435761ULL +
-        static_cast<uint64_t>(action.amount);
+    next.action_hash_ ^= static_cast<uint64_t>(action.type) << (next.num_actions_this_round_ * 4);
+    next.action_hash_ = next.action_hash_ * 2654435761ULL + static_cast<uint64_t>(action.amount);
 
     switch (action.type) {
         case ActionType::FOLD:
@@ -266,10 +264,7 @@ GameState GameState::apply_action(const Action& action) const {
             break;
 
         case ActionType::CALL: {
-            int to_call = std::min(
-                next.current_bet_ - player.bet_this_round,
-                player.stack
-            );
+            int to_call = std::min(next.current_bet_ - player.bet_this_round, player.stack);
             player.stack -= to_call;
             player.bet_this_round += to_call;
             player.total_invested += to_call;
@@ -335,10 +330,12 @@ bool GameState::is_round_complete() const {
     // Round is complete when every active player has acted at least once
     // and all active players have matched the current bet (or are all-in)
 
-    if (first_action_) return false;
+    if (first_action_)
+        return false;
 
     // If current player is the last raiser, everyone else has responded
-    if (num_active_players() == 0) return true;
+    if (num_active_players() == 0)
+        return true;
 
     // Check that all active players have equal bets
     for (int i = 0; i < MAX_PLAYERS; ++i) {
@@ -451,9 +448,7 @@ GameState GameState::deal_river(Card c) const {
     return next;
 }
 
-std::array<double, MAX_PLAYERS> GameState::payoffs(
-    const HandEvaluator& eval
-) const {
+std::array<double, MAX_PLAYERS> GameState::payoffs(const HandEvaluator& eval) const {
     std::array<double, MAX_PLAYERS> result;
     result.fill(0.0);
 
@@ -484,30 +479,25 @@ std::array<double, MAX_PLAYERS> GameState::payoffs(
     std::bitset<MAX_PLAYERS_CONST> active;
 
     for (int i = 0; i < MAX_PLAYERS; ++i) {
-        if (players_[i].status == PlayerStatus::FOLDED ||
-            players_[i].status == PlayerStatus::OUT) {
+        if (players_[i].status == PlayerStatus::FOLDED || players_[i].status == PlayerStatus::OUT) {
             continue;
         }
         active.set(i);
 
         if (num_board_cards_ >= 5) {
-            hand_ranks[i] = eval.evaluate(
-                players_[i].hole_cards[0],
-                players_[i].hole_cards[1],
-                board_[0], board_[1], board_[2],
-                board_[3], board_[4]
-            );
+            hand_ranks[i] = eval.evaluate(players_[i].hole_cards[0], players_[i].hole_cards[1],
+                                          board_[0], board_[1], board_[2], board_[3], board_[4]);
         }
     }
 
     auto winnings = pot_manager_.resolve(hand_ranks, active);
 
     for (int i = 0; i < MAX_PLAYERS; ++i) {
-        result[i] = static_cast<double>(winnings[i]) -
-                    static_cast<double>(players_[i].total_invested);
+        result[i] =
+            static_cast<double>(winnings[i]) - static_cast<double>(players_[i].total_invested);
     }
 
     return result;
 }
 
-} // namespace poker
+}  // namespace poker

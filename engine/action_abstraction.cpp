@@ -29,28 +29,29 @@ ActionAbstraction::ActionAbstraction() {
     }
 }
 
-const std::vector<BetSize>& ActionAbstraction::get_bet_sizes(
-    Street street
-) const {
+const std::vector<BetSize>& ActionAbstraction::get_bet_sizes(Street street) const {
     switch (street) {
-        case Street::PREFLOP: return preflop_bet_sizes_;
-        case Street::FLOP: return flop_bet_sizes_;
-        case Street::TURN: return turn_bet_sizes_;
-        case Street::RIVER: return river_bet_sizes_;
-        default: return flop_bet_sizes_;
+        case Street::PREFLOP:
+            return preflop_bet_sizes_;
+        case Street::FLOP:
+            return flop_bet_sizes_;
+        case Street::TURN:
+            return turn_bet_sizes_;
+        case Street::RIVER:
+            return river_bet_sizes_;
+        default:
+            return flop_bet_sizes_;
     }
 }
 
-std::vector<Action> ActionAbstraction::get_actions(
-    const GameState& state
-) const {
+std::vector<Action> ActionAbstraction::get_actions(const GameState& state) const {
     const auto& bet_sizes = get_bet_sizes(state.street());
     return state.legal_actions(bet_sizes);
 }
 
-Action ActionAbstraction::map_to_abstract(const Action& concrete,
-                                           const GameState& state) const {
-    if (concrete.type != ActionType::BET) return concrete;
+Action ActionAbstraction::map_to_abstract(const Action& concrete, const GameState& state) const {
+    if (concrete.type != ActionType::BET)
+        return concrete;
 
     auto actions = get_actions(state);
     int best_idx = -1;
@@ -66,7 +67,8 @@ Action ActionAbstraction::map_to_abstract(const Action& concrete,
         }
     }
 
-    if (best_idx >= 0) return actions[best_idx];
+    if (best_idx >= 0)
+        return actions[best_idx];
     return concrete;
 }
 
@@ -74,4 +76,4 @@ int ActionAbstraction::num_actions(const GameState& state) const {
     return static_cast<int>(get_actions(state).size());
 }
 
-} // namespace poker
+}  // namespace poker

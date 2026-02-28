@@ -8,8 +8,7 @@
 
 namespace poker {
 
-Trainer::Trainer(const CardAbstraction& card_abs,
-                  const ActionAbstraction& action_abs)
+Trainer::Trainer(const CardAbstraction& card_abs, const ActionAbstraction& action_abs)
     : eval_(), store_(256), card_abs_(card_abs), action_abs_(action_abs) {}
 
 void Trainer::train(const TrainingConfig& cfg) {
@@ -34,7 +33,8 @@ void Trainer::train(const TrainingConfig& cfg) {
     // Monitor thread
     while (!should_stop_) {
         int64_t current = iteration_counter_.load();
-        if (current >= cfg.num_iterations) break;
+        if (current >= cfg.num_iterations)
+            break;
 
         std::this_thread::sleep_for(std::chrono::seconds(5));
 
@@ -43,21 +43,16 @@ void Trainer::train(const TrainingConfig& cfg) {
         size_t memory_mb = store_.memory_bytes() / (1024 * 1024);
 
         if (progress_cb_) {
-            progress_cb_(static_cast<int>(current), elapsed,
-                         num_infosets, memory_mb);
+            progress_cb_(static_cast<int>(current), elapsed, num_infosets, memory_mb);
         } else {
             std::ostringstream oss;
-            oss << "Iteration " << current << "/" << cfg.num_iterations
-                << " | " << elapsed << "s"
-                << " | InfoSets: " << num_infosets
-                << " | Memory: " << memory_mb << " MB";
+            oss << "Iteration " << current << "/" << cfg.num_iterations << " | " << elapsed << "s"
+                << " | InfoSets: " << num_infosets << " | Memory: " << memory_mb << " MB";
             log_info(oss.str());
         }
 
         // Checkpoint
-        if (cfg.checkpoint_interval > 0 &&
-            current > 0 &&
-            current % cfg.checkpoint_interval == 0) {
+        if (cfg.checkpoint_interval > 0 && current > 0 && current % cfg.checkpoint_interval == 0) {
             save_checkpoint(static_cast<int>(current), cfg);
         }
     }
@@ -68,8 +63,8 @@ void Trainer::train(const TrainingConfig& cfg) {
     }
 
     double total_time = timer.elapsed_seconds();
-    log_info("Training complete: " + std::to_string(iteration_counter_.load()) +
-             " iterations in " + std::to_string(total_time) + "s");
+    log_info("Training complete: " + std::to_string(iteration_counter_.load()) + " iterations in " +
+             std::to_string(total_time) + "s");
 
     // Final checkpoint
     save_checkpoint(static_cast<int>(iteration_counter_.load()), cfg);
@@ -84,7 +79,8 @@ void Trainer::worker_thread(int thread_id, const TrainingConfig& cfg) {
 
     while (!should_stop_) {
         int64_t iter = iteration_counter_.fetch_add(1);
-        if (iter >= cfg.num_iterations) break;
+        if (iter >= cfg.num_iterations)
+            break;
 
         // DCFR discounting (only thread 0 applies it)
         if (thread_id == 0 && iter > 0 && iter % 10000 == 0) {
@@ -93,9 +89,8 @@ void Trainer::worker_thread(int thread_id, const TrainingConfig& cfg) {
 
         // Create a new hand
         int dealer = static_cast<int>(iter % MAX_PLAYERS);
-        GameState state = GameState::new_hand(
-            stacks, dealer, config::SMALL_BLIND, config::BIG_BLIND
-        );
+        GameState state =
+            GameState::new_hand(stacks, dealer, config::SMALL_BLIND, config::BIG_BLIND);
 
         // Deal hole cards to all players
         Deck deck;
@@ -116,23 +111,17 @@ void Trainer::worker_thread(int thread_id, const TrainingConfig& cfg) {
 
 void Trainer::apply_dcfr_discounting(int iteration, const TrainingConfig& cfg) {
     float t = static_cast<float>(iteration);
-    float positive_discount =
-        std::pow(t, cfg.dcfr_alpha) / (std::pow(t, cfg.dcfr_alpha) + 1.0f);
-    float negative_discount =
-        cfg.dcfr_beta >= 0
-            ? std::pow(t, cfg.dcfr_beta) /
-              (std::pow(t, cfg.dcfr_beta) + 1.0f)
-            : 0.0f; // negative beta = floor at zero
-    float strategy_discount =
-        std::pow(t / (t + 1.0f), cfg.dcfr_gamma);
+    float positive_discount = std::pow(t, cfg.dcfr_alpha) / (std::pow(t, cfg.dcfr_alpha) + 1.0f);
+    float negative_discount = cfg.dcfr_beta >= 0
+                                  ? std::pow(t, cfg.dcfr_beta) / (std::pow(t, cfg.dcfr_beta) + 1.0f)
+                                  : 0.0f;  // negative beta = floor at zero
+    float strategy_discount = std::pow(t / (t + 1.0f), cfg.dcfr_gamma);
 
-    store_.apply_discounting(positive_discount, negative_discount,
-                              strategy_discount);
+    store_.apply_discounting(positive_discount, negative_discount, strategy_discount);
 }
 
 void Trainer::save_checkpoint(int iteration, const TrainingConfig& cfg) {
-    std::string path = cfg.checkpoint_dir + "/strategy_" +
-                       std::to_string(iteration) + ".bin";
+    std::string path = cfg.checkpoint_dir + "/strategy_" + std::to_string(iteration) + ".bin";
     store_.save(path);
 }
 
@@ -148,4 +137,4 @@ void Trainer::set_progress_callback(ProgressCallback cb) {
     progress_cb_ = std::move(cb);
 }
 
-} // namespace poker
+}  // namespace poker

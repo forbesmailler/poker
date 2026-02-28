@@ -4,7 +4,8 @@
 namespace poker {
 
 std::string card_to_string(Card c) {
-    if (c >= NUM_CARDS) return "??";
+    if (c >= NUM_CARDS)
+        return "??";
     std::string s;
     s += RANK_CHARS[rank_of(c)];
     s += SUIT_CHARS[suit_of(c)];
@@ -41,4 +42,4 @@ Card string_to_card(const std::string& s) {
     return make_card(static_cast<uint8_t>(rank), static_cast<uint8_t>(suit));
 }
 
-} // namespace poker
+}  // namespace poker

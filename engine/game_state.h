@@ -36,20 +36,16 @@ struct PlayerState {
 };
 
 class GameState {
-public:
-    static GameState new_hand(
-        const std::array<int32_t, MAX_PLAYERS>& stacks,
-        int dealer_pos, int small_blind, int big_blind
-    );
+   public:
+    static GameState new_hand(const std::array<int32_t, MAX_PLAYERS>& stacks, int dealer_pos,
+                              int small_blind, int big_blind);
 
     bool is_terminal() const;
     bool is_chance_node() const;
     int current_player() const;
     Street street() const;
 
-    std::vector<Action> legal_actions(
-        const std::vector<BetSize>& allowed_bets
-    ) const;
+    std::vector<Action> legal_actions(const std::vector<BetSize>& allowed_bets) const;
 
     // State transitions
     GameState apply_action(const Action& action) const;
@@ -80,7 +76,7 @@ public:
     int big_blind() const { return big_blind_; }
     int small_blind() const { return small_blind_; }
 
-private:
+   private:
     std::array<PlayerState, MAX_PLAYERS> players_;
     std::array<Card, 5> board_;
     int num_board_cards_ = 0;
@@ -106,4 +102,4 @@ private:
     int first_to_act_preflop() const;
 };
 
-} // namespace poker
+}  // namespace poker

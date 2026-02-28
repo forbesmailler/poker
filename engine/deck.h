@@ -7,7 +7,7 @@
 namespace poker {
 
 class Deck {
-public:
+   public:
     Deck();
 
     void shuffle(Rng& rng);
@@ -16,10 +16,10 @@ public:
     void reset();
     int remaining() const;
 
-private:
+   private:
     std::array<Card, 52> cards_;
     int top_ = 0;
     CardMask dealt_ = 0;
 };
 
-} // namespace poker
+}  // namespace poker

@@ -8,13 +8,10 @@ namespace poker {
 using InfoSetKey = uint64_t;
 
 // Encode: player(3b) + street(2b) + card_bucket(16b) + action_hash(43b)
-inline InfoSetKey make_infoset_key(int player, int street,
-                                    uint16_t card_bucket,
-                                    uint64_t action_hash) {
-    return (static_cast<uint64_t>(player) << 61) |
-           (static_cast<uint64_t>(street & 0x3) << 59) |
-           (static_cast<uint64_t>(card_bucket) << 43) |
-           (action_hash & 0x7FFFFFFFFFFULL);
+inline InfoSetKey make_infoset_key(int player, int street, uint16_t card_bucket,
+                                   uint64_t action_hash) {
+    return (static_cast<uint64_t>(player) << 61) | (static_cast<uint64_t>(street & 0x3) << 59) |
+           (static_cast<uint64_t>(card_bucket) << 43) | (action_hash & 0x7FFFFFFFFFFULL);
 }
 
 struct InfoSetData {
@@ -24,8 +21,7 @@ struct InfoSetData {
     float strategy_sum[MAX_ACTIONS] = {};
     uint8_t num_actions = 0;
 
-    explicit InfoSetData(int n = 0)
-        : num_actions(static_cast<uint8_t>(n)) {}
+    explicit InfoSetData(int n = 0) : num_actions(static_cast<uint8_t>(n)) {}
 
     // Current strategy via regret matching
     void current_strategy(float* out) const {
@@ -61,4 +57,4 @@ struct InfoSetData {
     }
 };
 
-} // namespace poker
+}  // namespace poker

@@ -7,7 +7,7 @@ namespace poker {
 
 // xoshiro256** — fast, high-quality PRNG
 class Rng {
-public:
+   public:
     explicit Rng(uint64_t seed) {
         // SplitMix64 to initialize state from single seed
         state_[0] = splitmix64(seed);
@@ -30,24 +30,16 @@ public:
         return result;
     }
 
-    uint32_t next_u32() {
-        return static_cast<uint32_t>(next_u64() >> 32);
-    }
+    uint32_t next_u32() { return static_cast<uint32_t>(next_u64() >> 32); }
 
     // Uniform double in [0, 1)
-    double next_double() {
-        return static_cast<double>(next_u64() >> 11) * 0x1.0p-53;
-    }
+    double next_double() { return static_cast<double>(next_u64() >> 11) * 0x1.0p-53; }
 
     // Uniform float in [0, 1)
-    float next_float() {
-        return static_cast<float>(next_u32() >> 8) * 0x1.0p-24f;
-    }
+    float next_float() { return static_cast<float>(next_u32() >> 8) * 0x1.0p-24f; }
 
     // Uniform int in [0, n)
-    int next_int(int n) {
-        return static_cast<int>(next_u64() % static_cast<uint64_t>(n));
-    }
+    int next_int(int n) { return static_cast<int>(next_u64() % static_cast<uint64_t>(n)); }
 
     // Sample action index from probability distribution
     int sample_action(const float* probs, int n) {
@@ -55,7 +47,8 @@ public:
         float cumulative = 0.0f;
         for (int i = 0; i < n - 1; ++i) {
             cumulative += probs[i];
-            if (r < cumulative) return i;
+            if (r < cumulative)
+                return i;
         }
         return n - 1;
     }
@@ -69,12 +62,10 @@ public:
         }
     }
 
-private:
+   private:
     uint64_t state_[4];
 
-    static uint64_t rotl(uint64_t x, int k) {
-        return (x << k) | (x >> (64 - k));
-    }
+    static uint64_t rotl(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
 
     static uint64_t splitmix64(uint64_t x) {
         x += 0x9e3779b97f4a7c15ULL;
@@ -84,4 +75,4 @@ private:
     }
 };
 
-} // namespace poker
+}  // namespace poker

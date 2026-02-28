@@ -21,21 +21,18 @@ struct TrainingConfig {
 };
 
 class Trainer {
-public:
-    Trainer(const CardAbstraction& card_abs,
-            const ActionAbstraction& action_abs);
+   public:
+    Trainer(const CardAbstraction& card_abs, const ActionAbstraction& action_abs);
 
     void train(const TrainingConfig& cfg = TrainingConfig{});
     void stop();
     const InfoSetStore& get_store() const;
 
-    using ProgressCallback = std::function<void(
-        int iteration, double elapsed_seconds,
-        size_t num_infosets, size_t memory_mb
-    )>;
+    using ProgressCallback = std::function<void(int iteration, double elapsed_seconds,
+                                                size_t num_infosets, size_t memory_mb)>;
     void set_progress_callback(ProgressCallback cb);
 
-private:
+   private:
     HandEvaluator eval_;
     InfoSetStore store_;
     const CardAbstraction& card_abs_;
@@ -49,4 +46,4 @@ private:
     void save_checkpoint(int iteration, const TrainingConfig& cfg);
 };
 
-} // namespace poker
+}  // namespace poker

@@ -5,16 +5,11 @@
 
 namespace poker {
 
-MCCFR::MCCFR(InfoSetStore& store,
-              const CardAbstraction& card_abs,
-              const ActionAbstraction& action_abs,
-              const HandEvaluator& eval)
-    : store_(store), card_abs_(card_abs),
-      action_abs_(action_abs), eval_(eval) {}
+MCCFR::MCCFR(InfoSetStore& store, const CardAbstraction& card_abs,
+             const ActionAbstraction& action_abs, const HandEvaluator& eval)
+    : store_(store), card_abs_(card_abs), action_abs_(action_abs), eval_(eval) {}
 
-double MCCFR::traverse(const GameState& state,
-                        int traversing_player,
-                        Rng& rng, int iteration) {
+double MCCFR::traverse(const GameState& state, int traversing_player, Rng& rng, int iteration) {
     // Terminal node: return payoff
     if (state.is_terminal()) {
         auto payoffs = state.payoffs(eval_);
@@ -49,8 +44,7 @@ double MCCFR::traverse(const GameState& state,
 
         for (int a = 0; a < num_actions; ++a) {
             GameState next = state.apply_action(actions[a]);
-            action_values[a] = traverse(next, traversing_player,
-                                        rng, iteration);
+            action_values[a] = traverse(next, traversing_player, rng, iteration);
         }
 
         // Compute expected value under current strategy
@@ -125,20 +119,12 @@ GameState MCCFR::sample_chance(const GameState& state, Rng& rng) {
 }
 
 InfoSetKey MCCFR::compute_key(const GameState& state, int player) const {
-    uint16_t bucket = card_abs_.get_bucket(
-        state.street(),
-        state.players()[player].hole_cards[0],
-        state.players()[player].hole_cards[1],
-        state.board().data(),
-        state.num_board_cards()
-    );
+    uint16_t bucket = card_abs_.get_bucket(state.street(), state.players()[player].hole_cards[0],
+                                           state.players()[player].hole_cards[1],
+                                           state.board().data(), state.num_board_cards());
 
-    return make_infoset_key(
-        player,
-        static_cast<int>(state.street()),
-        bucket,
-        state.action_history_hash()
-    );
+    return make_infoset_key(player, static_cast<int>(state.street()), bucket,
+                            state.action_history_hash());
 }
 
-} // namespace poker
+}  // namespace poker

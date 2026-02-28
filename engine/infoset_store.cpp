@@ -5,8 +5,7 @@
 
 namespace poker {
 
-InfoSetStore::InfoSetStore(int num_shards)
-    : shards_(num_shards), num_shards_(num_shards) {}
+InfoSetStore::InfoSetStore(int num_shards) : shards_(num_shards), num_shards_(num_shards) {}
 
 InfoSetData& InfoSetStore::get_or_create(InfoSetKey key, int num_actions) {
     int idx = shard_index(key);
@@ -106,13 +105,11 @@ void InfoSetStore::load(const std::string& path) {
         }
     }
 
-    log_info("Loaded " + std::to_string(total_entries) +
-             " info sets from " + path);
+    log_info("Loaded " + std::to_string(total_entries) + " info sets from " + path);
 }
 
-void InfoSetStore::apply_discounting(float positive_discount,
-                                      float negative_discount,
-                                      float strategy_discount) {
+void InfoSetStore::apply_discounting(float positive_discount, float negative_discount,
+                                     float strategy_discount) {
     for (auto& shard : shards_) {
         std::unique_lock lock(shard.mutex);
         for (auto& [key, data] : shard.data) {
@@ -135,4 +132,4 @@ void InfoSetStore::clear() {
     }
 }
 
-} // namespace poker
+}  // namespace poker

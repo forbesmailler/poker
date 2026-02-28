@@ -16,7 +16,7 @@ struct SidePot {
 };
 
 class PotManager {
-public:
+   public:
     PotManager();
 
     void post_blind(int player, int32_t amount);
@@ -28,22 +28,19 @@ public:
     // Returns net chip change per player (won - invested)
     std::array<int32_t, MAX_PLAYERS_CONST> resolve(
         const std::array<uint16_t, MAX_PLAYERS_CONST>& hand_ranks,
-        const std::bitset<MAX_PLAYERS_CONST>& active_players
-    ) const;
+        const std::bitset<MAX_PLAYERS_CONST>& active_players) const;
 
     int32_t total() const;
     const std::vector<SidePot>& pots() const;
 
-    const std::array<int32_t, MAX_PLAYERS_CONST>& round_bets() const {
-        return round_bets_;
-    }
+    const std::array<int32_t, MAX_PLAYERS_CONST>& round_bets() const { return round_bets_; }
 
     int32_t player_round_bet(int player) const { return round_bets_[player]; }
 
-private:
+   private:
     std::vector<SidePot> pots_;
     std::array<int32_t, MAX_PLAYERS_CONST> round_bets_;
     std::bitset<MAX_PLAYERS_CONST> active_mask_;
 };
 
-} // namespace poker
+}  // namespace poker

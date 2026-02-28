@@ -19,9 +19,7 @@ def read_strategy_file(path: str) -> dict:
             (num_actions,) = struct.unpack("<B", f.read(1))
 
             regrets = struct.unpack(f"<{num_actions}f", f.read(4 * num_actions))
-            strategy_sum = struct.unpack(
-                f"<{num_actions}f", f.read(4 * num_actions)
-            )
+            strategy_sum = struct.unpack(f"<{num_actions}f", f.read(4 * num_actions))
 
             infosets[key] = {
                 "num_actions": num_actions,
@@ -71,13 +69,13 @@ def analyze(path: str):
         street_counts[street] += 1
         street_action_counts[street].append(data["num_actions"])
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Strategy Analysis: {path}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"Total info sets: {len(infosets):,}")
     print(f"Estimated memory: {len(infosets) * 100 / 1024 / 1024:.1f} MB")
 
-    print(f"\nInfo sets by street:")
+    print("\nInfo sets by street:")
     for street in ["Preflop", "Flop", "Turn", "River"]:
         count = street_counts.get(street, 0)
         if count > 0:
@@ -87,7 +85,7 @@ def analyze(path: str):
             print(f"  {street:8s}: {count:>10,}  (avg {avg_actions:.1f} actions)")
 
     # Show sample strategies
-    print(f"\nSample preflop strategies:")
+    print("\nSample preflop strategies:")
     count = 0
     for key, data in infosets.items():
         decoded = decode_key(key)
@@ -104,12 +102,10 @@ def analyze(path: str):
             )
 
         strat_str = "  ".join(
-            f"{action_names[i][:4]}:{avg[i]*100:5.1f}%"
+            f"{action_names[i][:4]}:{avg[i] * 100:5.1f}%"
             for i in range(data["num_actions"])
         )
-        print(
-            f"  P{decoded['player']} bucket={decoded['card_bucket']:3d}: {strat_str}"
-        )
+        print(f"  P{decoded['player']} bucket={decoded['card_bucket']:3d}: {strat_str}")
 
         count += 1
         if count >= 20:

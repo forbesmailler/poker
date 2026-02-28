@@ -1,141 +1,10 @@
 #include "card_abstraction.h"
-#include "equity_calculator.h"
-#include "hand_evaluator.h"
 #include "generated_config.h"
 #include "utils.h"
 #include <algorithm>
-#include <numeric>
-#include <random>
-#include <thread>
-#include <mutex>
 #include <cmath>
-#include <functional>
 
 namespace poker {
-
-// K-means clustering with custom distance function
-struct KMeansResult {
-    std::vector<int> assignments;
-    std::vector<std::vector<float>> centroids;
-    int num_iterations;
-};
-
-static KMeansResult kmeans_cluster(
-    const std::vector<std::vector<float>>& points,
-    int k,
-    const std::function<float(const std::vector<float>&,
-                               const std::vector<float>&)>& distance,
-    int max_iterations = 100,
-    int num_threads = 1
-) {
-    int n = static_cast<int>(points.size());
-    if (n == 0 || k <= 0) return {{}, {}, 0};
-
-    int dim = static_cast<int>(points[0].size());
-    KMeansResult result;
-    result.assignments.resize(n, 0);
-    result.centroids.resize(k, std::vector<float>(dim, 0.0f));
-
-    // K-means++ initialization
-    std::mt19937 gen(42);
-    std::uniform_int_distribution<int> dist(0, n - 1);
-
-    // First centroid: random point
-    result.centroids[0] = points[dist(gen)];
-
-    // Remaining centroids: proportional to squared distance
-    std::vector<float> min_dists(n, std::numeric_limits<float>::max());
-    for (int c = 1; c < k; ++c) {
-        float total_dist = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            float d = distance(points[i], result.centroids[c - 1]);
-            min_dists[i] = std::min(min_dists[i], d * d);
-            total_dist += min_dists[i];
-        }
-
-        std::uniform_real_distribution<float> rdist(0.0f, total_dist);
-        float threshold = rdist(gen);
-        float cumulative = 0.0f;
-        int chosen = 0;
-        for (int i = 0; i < n; ++i) {
-            cumulative += min_dists[i];
-            if (cumulative >= threshold) {
-                chosen = i;
-                break;
-            }
-        }
-        result.centroids[c] = points[chosen];
-    }
-
-    // Lloyd's algorithm
-    for (int iter = 0; iter < max_iterations; ++iter) {
-        // Assignment step
-        bool changed = false;
-        std::mutex mtx;
-
-        auto assign_range = [&](int start, int end) {
-            for (int i = start; i < end; ++i) {
-                float best_dist = std::numeric_limits<float>::max();
-                int best_cluster = 0;
-                for (int c = 0; c < k; ++c) {
-                    float d = distance(points[i], result.centroids[c]);
-                    if (d < best_dist) {
-                        best_dist = d;
-                        best_cluster = c;
-                    }
-                }
-                if (result.assignments[i] != best_cluster) {
-                    result.assignments[i] = best_cluster;
-                    std::lock_guard<std::mutex> lock(mtx);
-                    changed = true;
-                }
-            }
-        };
-
-        if (num_threads > 1) {
-            std::vector<std::thread> threads;
-            int chunk = (n + num_threads - 1) / num_threads;
-            for (int t = 0; t < num_threads; ++t) {
-                int start = t * chunk;
-                int end = std::min(start + chunk, n);
-                if (start < end) {
-                    threads.emplace_back(assign_range, start, end);
-                }
-            }
-            for (auto& t : threads) t.join();
-        } else {
-            assign_range(0, n);
-        }
-
-        if (!changed) {
-            result.num_iterations = iter + 1;
-            return result;
-        }
-
-        // Update step: compute new centroids (mean of assigned points)
-        std::vector<std::vector<float>> sums(k, std::vector<float>(dim, 0.0f));
-        std::vector<int> counts(k, 0);
-
-        for (int i = 0; i < n; ++i) {
-            int c = result.assignments[i];
-            counts[c]++;
-            for (int d = 0; d < dim; ++d) {
-                sums[c][d] += points[i][d];
-            }
-        }
-
-        for (int c = 0; c < k; ++c) {
-            if (counts[c] > 0) {
-                for (int d = 0; d < dim; ++d) {
-                    result.centroids[c][d] = sums[c][d] / counts[c];
-                }
-            }
-        }
-    }
-
-    result.num_iterations = max_iterations;
-    return result;
-}
 
 CardAbstraction::CardAbstraction() {}
 
@@ -161,13 +30,13 @@ int CardAbstraction::canonical_preflop_index(Card c0, Card c1) {
         // Index = 13 + offset for suited hands
         int idx = 13;
         for (int i = 12; i > r0; --i) {
-            idx += i; // number of suited hands with higher rank = i
+            idx += i;  // number of suited hands with higher rank = i
         }
         idx += (r0 - r1 - 1);
         return idx;
     } else {
         // Offsuit: AKo, AQo, ..., 32o
-        int idx = 13 + 78; // 78 suited combos
+        int idx = 13 + 78;  // 78 suited combos
         for (int i = 12; i > r0; --i) {
             idx += i;
         }
@@ -176,9 +45,8 @@ int CardAbstraction::canonical_preflop_index(Card c0, Card c1) {
     }
 }
 
-Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1,
-                                    const Card* board,
-                                    int num_board_cards) const {
+Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const Card* board,
+                                   int num_board_cards) const {
     if (!built_) {
         // Return a simple bucket based on canonical preflop index
         int idx = canonical_preflop_index(hole0, hole1);
@@ -203,8 +71,7 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1,
                 hash ^= static_cast<uint64_t>(hole0) * 2654435761ULL;
                 hash ^= static_cast<uint64_t>(hole1) * 40503ULL;
                 for (int i = 0; i < num_board_cards; ++i) {
-                    hash ^= static_cast<uint64_t>(board[i]) *
-                            (2654435761ULL + i * 12345ULL);
+                    hash ^= static_cast<uint64_t>(board[i]) * (2654435761ULL + i * 12345ULL);
                 }
                 return static_cast<Bucket>(hash % num_buckets(street));
             }
@@ -215,11 +82,16 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1,
 
 int CardAbstraction::num_buckets(Street street) const {
     switch (street) {
-        case Street::PREFLOP: return config::PREFLOP_BUCKETS;
-        case Street::FLOP: return config::FLOP_BUCKETS;
-        case Street::TURN: return config::TURN_BUCKETS;
-        case Street::RIVER: return config::RIVER_BUCKETS;
-        default: return 1;
+        case Street::PREFLOP:
+            return config::PREFLOP_BUCKETS;
+        case Street::FLOP:
+            return config::FLOP_BUCKETS;
+        case Street::TURN:
+            return config::TURN_BUCKETS;
+        case Street::RIVER:
+            return config::RIVER_BUCKETS;
+        default:
+            return 1;
     }
 }
 
@@ -228,8 +100,7 @@ void CardAbstraction::build(int /*num_threads*/) {
     log_info("Building card abstraction...");
 
     build_preflop_abstraction();
-    log_info("  Preflop: " + std::to_string(preflop_buckets_.size()) +
-             " canonical hands");
+    log_info("  Preflop: " + std::to_string(preflop_buckets_.size()) + " canonical hands");
 
     // Post-flop abstractions are expensive — skip if not needed yet
     // build_flop_abstraction(num_threads);
@@ -237,8 +108,7 @@ void CardAbstraction::build(int /*num_threads*/) {
     // build_river_abstraction(num_threads);
 
     built_ = true;
-    log_info("Card abstraction built in " +
-             std::to_string(timer.elapsed_seconds()) + "s");
+    log_info("Card abstraction built in " + std::to_string(timer.elapsed_seconds()) + "s");
 }
 
 void CardAbstraction::build_preflop_abstraction() {
@@ -297,4 +167,4 @@ void CardAbstraction::load(const std::string& path) {
     log_info("Loaded card abstraction from " + path);
 }
 
-} // namespace poker
+}  // namespace poker

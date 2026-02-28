@@ -24,8 +24,8 @@ static int is_straight(uint16_t rank_bits) {
     // Also check wheel (A-2-3-4-5): bits 0,1,2,3,12
 
     // Check wheel first
-    if ((rank_bits & 0x100F) == 0x100F) { // A,2,3,4,5
-        return 3; // 5-high straight (high card is 5, rank=3)
+    if ((rank_bits & 0x100F) == 0x100F) {  // A,2,3,4,5
+        return 3;                          // 5-high straight (high card is 5, rank=3)
     }
 
     for (int top = 12; top >= 4; --top) {
@@ -58,11 +58,13 @@ void HandEvaluator::init_flush_table() {
 
     for (uint16_t bits = 0; bits < 8192; ++bits) {
         int count = popcount16(bits);
-        if (count < 5) continue;
+        if (count < 5)
+            continue;
 
         // For flush + unique ranks, only meaningful if exactly 5
         // For 6-7 card evaluation, we extract the best 5
-        if (count != 5) continue;
+        if (count != 5)
+            continue;
 
         int straight_high = is_straight(bits);
         if (straight_high >= 0) {
@@ -90,7 +92,8 @@ void HandEvaluator::init_unique5_table() {
     std::memset(unique5_table_.data(), 0, sizeof(unique5_table_));
 
     for (uint16_t bits = 0; bits < 8192; ++bits) {
-        if (popcount16(bits) != 5) continue;
+        if (popcount16(bits) != 5)
+            continue;
 
         int straight_high = is_straight(bits);
         if (straight_high >= 0) {
@@ -122,7 +125,8 @@ void HandEvaluator::init_remaining_table() {
                             rank_bits |= (1 << ranks[i]);
 
                         int unique_count = popcount16(rank_bits);
-                        if (unique_count == 5) continue; // All unique — handled by unique5_table
+                        if (unique_count == 5)
+                            continue;  // All unique — handled by unique5_table
 
                         // Count occurrences of each rank
                         int counts[13] = {};
@@ -142,18 +146,26 @@ void HandEvaluator::init_remaining_table() {
                         }
 
                         int category;
-                        if (max_count == 4) category = FOUR_OF_A_KIND;
-                        else if (max_count == 3 && second_max == 2) category = FULL_HOUSE;
-                        else if (max_count == 3) category = THREE_OF_A_KIND;
-                        else if (max_count == 2 && second_max == 2) category = TWO_PAIR;
-                        else category = ONE_PAIR;
+                        if (max_count == 4)
+                            category = FOUR_OF_A_KIND;
+                        else if (max_count == 3 && second_max == 2)
+                            category = FULL_HOUSE;
+                        else if (max_count == 3)
+                            category = THREE_OF_A_KIND;
+                        else if (max_count == 2 && second_max == 2)
+                            category = TWO_PAIR;
+                        else
+                            category = ONE_PAIR;
 
                         // Sub-ranking: encode the important ranks
                         // For ordering, put the primary group rank highest
                         int sub = 0;
 
                         // Collect ranks by count (descending count, then descending rank)
-                        struct RankInfo { int rank; int count; };
+                        struct RankInfo {
+                            int rank;
+                            int count;
+                        };
                         RankInfo infos[5];
                         int n_infos = 0;
                         for (int r = 12; r >= 0; --r) {
@@ -162,32 +174,34 @@ void HandEvaluator::init_remaining_table() {
                             }
                         }
                         // Sort by count descending, then rank descending
-                        std::sort(infos, infos + n_infos,
-                                  [](const RankInfo& a, const RankInfo& b) {
-                                      if (a.count != b.count) return a.count > b.count;
-                                      return a.rank > b.rank;
-                                  });
+                        std::sort(infos, infos + n_infos, [](const RankInfo& a, const RankInfo& b) {
+                            if (a.count != b.count)
+                                return a.count > b.count;
+                            return a.rank > b.rank;
+                        });
 
                         // Encode: primary rank * 169 + secondary * 13 + tertiary
                         // This gives a unique ordering within each category
-                        if (n_infos >= 1) sub = infos[0].rank;
-                        if (n_infos >= 2) sub = sub * 13 + infos[1].rank;
-                        if (n_infos >= 3) sub = sub * 13 + infos[2].rank;
-                        if (n_infos >= 4) sub = sub * 13 + infos[3].rank;
+                        if (n_infos >= 1)
+                            sub = infos[0].rank;
+                        if (n_infos >= 2)
+                            sub = sub * 13 + infos[1].rank;
+                        if (n_infos >= 3)
+                            sub = sub * 13 + infos[2].rank;
+                        if (n_infos >= 4)
+                            sub = sub * 13 + infos[3].rank;
 
                         HandRank hand_rank = make_rank(category, sub & 0xFFF);
 
                         // Compute prime product hash
                         uint32_t prime_product = 1;
                         for (int i = 0; i < 5; ++i) {
-                            prime_product *= static_cast<uint32_t>(
-                                RANK_PRIMES[ranks[i]]);
+                            prime_product *= static_cast<uint32_t>(RANK_PRIMES[ranks[i]]);
                         }
 
                         // Insert into hash table (open addressing)
                         uint32_t idx = prime_product % HASH_TABLE_SIZE;
-                        while (hash_keys_[idx] != 0 &&
-                               hash_keys_[idx] != prime_product) {
+                        while (hash_keys_[idx] != 0 && hash_keys_[idx] != prime_product) {
                             idx = (idx + 1) % HASH_TABLE_SIZE;
                         }
                         hash_keys_[idx] = prime_product;
@@ -221,8 +235,7 @@ HandRank HandEvaluator::eval5(Card c0, Card c1, Card c2, Card c3, Card c4) const
     uint8_t s0 = suit_of(c0), s1 = suit_of(c1), s2 = suit_of(c2);
     uint8_t s3 = suit_of(c3), s4 = suit_of(c4);
 
-    uint16_t rank_bits = (1 << r0) | (1 << r1) | (1 << r2) |
-                         (1 << r3) | (1 << r4);
+    uint16_t rank_bits = (1 << r0) | (1 << r1) | (1 << r2) | (1 << r3) | (1 << r4);
     int unique_ranks = popcount16(rank_bits);
 
     bool is_flush = (s0 == s1 && s1 == s2 && s2 == s3 && s3 == s4);
@@ -237,17 +250,15 @@ HandRank HandEvaluator::eval5(Card c0, Card c1, Card c2, Card c3, Card c4) const
 
     // Paired hand — use prime product hash
     uint32_t prime_product =
-        static_cast<uint32_t>(RANK_PRIMES[r0]) *
-        static_cast<uint32_t>(RANK_PRIMES[r1]) *
-        static_cast<uint32_t>(RANK_PRIMES[r2]) *
-        static_cast<uint32_t>(RANK_PRIMES[r3]) *
+        static_cast<uint32_t>(RANK_PRIMES[r0]) * static_cast<uint32_t>(RANK_PRIMES[r1]) *
+        static_cast<uint32_t>(RANK_PRIMES[r2]) * static_cast<uint32_t>(RANK_PRIMES[r3]) *
         static_cast<uint32_t>(RANK_PRIMES[r4]);
 
     return hash_table_[hash_find(prime_product)];
 }
 
-HandRank HandEvaluator::evaluate(Card c0, Card c1, Card c2,
-                                  Card c3, Card c4, Card c5, Card c6) const {
+HandRank HandEvaluator::evaluate(Card c0, Card c1, Card c2, Card c3, Card c4, Card c5,
+                                 Card c6) const {
     Card cards[7] = {c0, c1, c2, c3, c4, c5, c6};
     return evaluate(cards, 7);
 }
@@ -279,7 +290,7 @@ HandRank HandEvaluator::evaluate(const Card* cards, int n) const {
             uint16_t bits = suit_bits[s];
 
             // Extract individual rank bits
-            int flush_ranks[8]; // at most 7
+            int flush_ranks[8];  // at most 7
             int nf = 0;
             for (int r = 0; r < 13; ++r) {
                 if (bits & (1 << r)) {
@@ -293,14 +304,12 @@ HandRank HandEvaluator::evaluate(const Card* cards, int n) const {
                     for (int c = b + 1; c < nf; ++c) {
                         for (int d = c + 1; d < nf; ++d) {
                             for (int e = d + 1; e < nf; ++e) {
-                                uint16_t sub_bits =
-                                    (1 << flush_ranks[a]) |
-                                    (1 << flush_ranks[b]) |
-                                    (1 << flush_ranks[c]) |
-                                    (1 << flush_ranks[d]) |
-                                    (1 << flush_ranks[e]);
+                                uint16_t sub_bits = (1 << flush_ranks[a]) | (1 << flush_ranks[b]) |
+                                                    (1 << flush_ranks[c]) | (1 << flush_ranks[d]) |
+                                                    (1 << flush_ranks[e]);
                                 HandRank r = flush_table_[sub_bits];
-                                if (r > best) best = r;
+                                if (r > best)
+                                    best = r;
                             }
                         }
                     }
@@ -315,9 +324,9 @@ HandRank HandEvaluator::evaluate(const Card* cards, int n) const {
             for (int c = b + 1; c < n; ++c) {
                 for (int d = c + 1; d < n; ++d) {
                     for (int e = d + 1; e < n; ++e) {
-                        HandRank r = eval5(cards[a], cards[b], cards[c],
-                                           cards[d], cards[e]);
-                        if (r > best) best = r;
+                        HandRank r = eval5(cards[a], cards[b], cards[c], cards[d], cards[e]);
+                        if (r > best)
+                            best = r;
                     }
                 }
             }
@@ -328,12 +337,11 @@ HandRank HandEvaluator::evaluate(const Card* cards, int n) const {
 }
 
 const char* HandEvaluator::category_name(int cat) {
-    static const char* names[] = {
-        "High Card", "One Pair", "Two Pair", "Three of a Kind",
-        "Straight", "Flush", "Full House", "Four of a Kind",
-        "Straight Flush"
-    };
-    if (cat >= 0 && cat <= 8) return names[cat];
+    static const char* names[] = {"High Card",       "One Pair",       "Two Pair",
+                                  "Three of a Kind", "Straight",       "Flush",
+                                  "Full House",      "Four of a Kind", "Straight Flush"};
+    if (cat >= 0 && cat <= 8)
+        return names[cat];
     return "Unknown";
 }
 
@@ -342,4 +350,4 @@ const HandEvaluator& get_evaluator() {
     return instance;
 }
 
-} // namespace poker
+}  // namespace poker

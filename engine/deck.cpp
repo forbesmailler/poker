@@ -46,4 +46,4 @@ int Deck::remaining() const {
     return count;
 }
 
-} // namespace poker
+}  // namespace poker

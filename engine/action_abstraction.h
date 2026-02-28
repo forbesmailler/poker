@@ -7,19 +7,18 @@
 namespace poker {
 
 class ActionAbstraction {
-public:
+   public:
     ActionAbstraction();
 
     // Get legal abstract actions for current state
     std::vector<Action> get_actions(const GameState& state) const;
 
     // Map concrete bet to nearest abstract bet
-    Action map_to_abstract(const Action& concrete,
-                           const GameState& state) const;
+    Action map_to_abstract(const Action& concrete, const GameState& state) const;
 
     int num_actions(const GameState& state) const;
 
-private:
+   private:
     std::vector<BetSize> preflop_bet_sizes_;
     std::vector<BetSize> flop_bet_sizes_;
     std::vector<BetSize> turn_bet_sizes_;
@@ -28,4 +27,4 @@ private:
     const std::vector<BetSize>& get_bet_sizes(Street street) const;
 };
 
-} // namespace poker
+}  // namespace poker
