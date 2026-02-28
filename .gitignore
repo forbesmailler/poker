@@ -164,3 +164,19 @@ __marimo__/
 
 # VS Code
 .vscode/
+
+# C++ build artifacts
+engine/build/
+*.exe
+*.pdb
+*.obj
+*.lib
+*.ilk
+*.exp
+
+# Solver output
+checkpoints/
+*.bin
+
+# Generated config
+engine/generated_config.h
