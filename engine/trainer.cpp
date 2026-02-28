@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <regex>
 #include <sstream>
 
 namespace poker {
@@ -11,16 +12,54 @@ namespace poker {
 Trainer::Trainer(const CardAbstraction& card_abs, const ActionAbstraction& action_abs)
     : eval_(), store_(256), card_abs_(card_abs), action_abs_(action_abs) {}
 
+int Trainer::load_latest_checkpoint(const std::string& checkpoint_dir) {
+    if (!std::filesystem::exists(checkpoint_dir))
+        return 0;
+
+    std::string latest_path;
+    int max_iter = 0;
+    std::regex pattern("strategy_(\\d+)\\.bin");
+
+    for (const auto& entry : std::filesystem::directory_iterator(checkpoint_dir)) {
+        std::string filename = entry.path().filename().string();
+        std::smatch match;
+        if (std::regex_match(filename, match, pattern)) {
+            int iter = std::stoi(match[1].str());
+            if (iter > max_iter) {
+                max_iter = iter;
+                latest_path = entry.path().string();
+            }
+        }
+    }
+
+    if (latest_path.empty())
+        return 0;
+
+    log_info("Resuming from checkpoint: " + latest_path);
+    store_.load(latest_path);
+    return max_iter;
+}
+
 void Trainer::train(const TrainingConfig& cfg) {
     should_stop_ = false;
-    iteration_counter_ = 0;
 
     // Create checkpoint directory
     std::filesystem::create_directories(cfg.checkpoint_dir);
 
+    // Try to resume from latest checkpoint
+    int start_iter = load_latest_checkpoint(cfg.checkpoint_dir);
+    iteration_counter_ = start_iter;
+
+    int64_t total_target = static_cast<int64_t>(start_iter) + cfg.num_iterations;
+    target_iterations_ = total_target;
+
     log_info("Starting MCCFR training:");
-    log_info("  Iterations: " + std::to_string(cfg.num_iterations));
-    log_info("  Threads:    " + std::to_string(cfg.num_threads));
+    if (start_iter > 0) {
+        log_info("  Resumed at:  " + std::to_string(start_iter));
+    }
+    log_info("  Target:      " + std::to_string(total_target) + " (" +
+             std::to_string(cfg.num_iterations) + " new)");
+    log_info("  Threads:     " + std::to_string(cfg.num_threads));
 
     Timer timer;
 
@@ -33,7 +72,7 @@ void Trainer::train(const TrainingConfig& cfg) {
     // Monitor thread
     while (!should_stop_) {
         int64_t current = iteration_counter_.load();
-        if (current >= cfg.num_iterations)
+        if (current >= total_target)
             break;
 
         std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -46,7 +85,7 @@ void Trainer::train(const TrainingConfig& cfg) {
             progress_cb_(static_cast<int>(current), elapsed, num_infosets, memory_mb);
         } else {
             std::ostringstream oss;
-            oss << "Iteration " << current << "/" << cfg.num_iterations << " | " << elapsed << "s"
+            oss << "Iteration " << current << "/" << total_target << " | " << elapsed << "s"
                 << " | InfoSets: " << num_infosets << " | Memory: " << memory_mb << " MB";
             log_info(oss.str());
         }
@@ -79,7 +118,7 @@ void Trainer::worker_thread(int thread_id, const TrainingConfig& cfg) {
 
     while (!should_stop_) {
         int64_t iter = iteration_counter_.fetch_add(1);
-        if (iter >= cfg.num_iterations)
+        if (iter >= target_iterations_)
             break;
 
         // DCFR discounting (only thread 0 applies it)

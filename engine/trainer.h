@@ -28,6 +28,10 @@ class Trainer {
     void stop();
     const InfoSetStore& get_store() const;
 
+    // Load the latest checkpoint from the checkpoint directory.
+    // Returns the iteration count it was saved at (0 if none found).
+    int load_latest_checkpoint(const std::string& checkpoint_dir);
+
     using ProgressCallback = std::function<void(int iteration, double elapsed_seconds,
                                                 size_t num_infosets, size_t memory_mb)>;
     void set_progress_callback(ProgressCallback cb);
@@ -39,6 +43,7 @@ class Trainer {
     const ActionAbstraction& action_abs_;
     std::atomic<bool> should_stop_{false};
     std::atomic<int64_t> iteration_counter_{0};
+    std::atomic<int64_t> target_iterations_{0};
     ProgressCallback progress_cb_;
 
     void worker_thread(int thread_id, const TrainingConfig& cfg);
