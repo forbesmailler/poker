@@ -36,6 +36,8 @@ set(ENGINE_SOURCES
     card_abstraction.cpp
     equity_calculator.cpp
     action_abstraction.cpp
+    range_manager.cpp
+    subgame_cfr.cpp
     utils.cpp
 )
 
@@ -69,6 +71,7 @@ set(TEST_SOURCES
     ${TEST_DIR}/test_pot_manager.cpp
     ${TEST_DIR}/test_mccfr.cpp
     ${TEST_DIR}/test_abstraction.cpp
+    ${TEST_DIR}/test_subgame.cpp
 )
 
 add_executable(poker_tests ${TEST_SOURCES})

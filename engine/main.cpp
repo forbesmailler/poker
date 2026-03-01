@@ -5,9 +5,12 @@
 #include "trainer.h"
 #include "infoset_store.h"
 #include "hand_evaluator.h"
+#include "range_manager.h"
+#include "subgame_cfr.h"
 #include "utils.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <filesystem>
 
@@ -19,6 +22,7 @@ void print_usage() {
               << "  build-abstraction   Precompute card abstraction tables\n"
               << "  train               Run MCCFR training\n"
               << "  query               Interactive strategy query\n"
+              << "  solve               River subgame solving (reads from stdin)\n"
               << "  info                Show training stats / memory usage\n";
 }
 
@@ -85,15 +89,8 @@ int cmd_train() {
     return 0;
 }
 
-int cmd_query() {
-    // Load the latest checkpoint
-    std::string checkpoint_dir = config::CHECKPOINT_DIR;
-    if (!std::filesystem::exists(checkpoint_dir)) {
-        log_error("No checkpoint directory found. Run 'train' first.");
-        return 1;
-    }
-
-    // Find latest checkpoint
+// Find the latest strategy checkpoint file
+static std::string find_latest_checkpoint(const std::string& checkpoint_dir) {
     std::string latest;
     int max_iter = 0;
     for (const auto& entry : std::filesystem::directory_iterator(checkpoint_dir)) {
@@ -106,7 +103,17 @@ int cmd_query() {
             }
         }
     }
+    return latest;
+}
 
+int cmd_query() {
+    std::string checkpoint_dir = config::CHECKPOINT_DIR;
+    if (!std::filesystem::exists(checkpoint_dir)) {
+        log_error("No checkpoint directory found. Run 'train' first.");
+        return 1;
+    }
+
+    std::string latest = find_latest_checkpoint(checkpoint_dir);
     if (latest.empty()) {
         log_error("No strategy checkpoints found. Run 'train' first.");
         return 1;
@@ -150,6 +157,227 @@ int cmd_query() {
     return 0;
 }
 
+int cmd_solve() {
+    std::string checkpoint_dir = config::CHECKPOINT_DIR;
+    if (!std::filesystem::exists(checkpoint_dir)) {
+        log_error("No checkpoint directory found. Run 'train' first.");
+        return 1;
+    }
+
+    // Load blueprint
+    std::string latest = find_latest_checkpoint(checkpoint_dir);
+    if (latest.empty()) {
+        log_error("No strategy checkpoints found. Run 'train' first.");
+        return 1;
+    }
+
+    InfoSetStore blueprint;
+    blueprint.load(latest);
+    log_info("Loaded blueprint from " + latest + " (" + std::to_string(blueprint.size()) +
+             " info sets)");
+
+    // Load card abstraction
+    CardAbstraction card_abs;
+    std::string abs_path = std::string(config::CHECKPOINT_DIR) + "/abstraction.bin";
+    if (std::filesystem::exists(abs_path)) {
+        card_abs.load(abs_path);
+    } else {
+        log_error("No abstraction.bin found. Run 'build-abstraction' first.");
+        return 1;
+    }
+
+    ActionAbstraction action_abs;
+    const HandEvaluator& eval = get_evaluator();
+
+    // Parse input from stdin
+    int hero_seat = -1, opp_seat = -1;
+    Card hero_c0 = CARD_NONE, hero_c1 = CARD_NONE;
+    std::vector<Card> board_cards;
+    std::array<int32_t, MAX_PLAYERS> stacks = {};
+    int dealer_pos = 0;
+    int num_iterations = 1000;
+
+    struct ActionRecord {
+        int player;
+        std::string action_type;
+        int amount;
+    };
+    std::vector<ActionRecord> action_records;
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty() || line[0] == '#')
+            continue;
+
+        std::istringstream iss(line);
+        std::string keyword;
+        iss >> keyword;
+
+        if (keyword == "hero") {
+            iss >> hero_seat;
+            std::string c0s, c1s;
+            iss >> c0s >> c1s;
+            hero_c0 = string_to_card(c0s);
+            hero_c1 = string_to_card(c1s);
+        } else if (keyword == "opponent") {
+            iss >> opp_seat;
+        } else if (keyword == "board") {
+            std::string cs;
+            while (iss >> cs) {
+                board_cards.push_back(string_to_card(cs));
+            }
+        } else if (keyword == "stacks") {
+            for (int i = 0; i < MAX_PLAYERS; ++i)
+                iss >> stacks[i];
+        } else if (keyword == "dealer") {
+            iss >> dealer_pos;
+        } else if (keyword == "action") {
+            ActionRecord rec;
+            iss >> rec.player >> rec.action_type;
+            rec.amount = 0;
+            if (rec.action_type == "bet" || rec.action_type == "raise")
+                iss >> rec.amount;
+            action_records.push_back(rec);
+        } else if (keyword == "iterations") {
+            iss >> num_iterations;
+        } else if (keyword == "end" || keyword == "solve") {
+            break;
+        }
+    }
+
+    if (hero_seat < 0 || opp_seat < 0 || hero_c0 == CARD_NONE || board_cards.size() < 5) {
+        log_error("Incomplete input. Need: hero, opponent, board (5 cards), stacks, actions.");
+        return 1;
+    }
+
+    // Reconstruct game state by replaying actions
+    GameState state =
+        GameState::new_hand(stacks, dealer_pos, config::SMALL_BLIND, config::BIG_BLIND);
+    state.set_hole_cards(hero_seat, hero_c0, hero_c1);
+
+    // Track action history for range construction
+    std::vector<std::pair<GameState, Action>> action_history;
+
+    // Process actions, dealing board cards when chance nodes arise
+    int board_dealt = 0;
+    for (const auto& rec : action_records) {
+        // Deal board cards if we hit a chance node
+        while (state.is_chance_node() && !state.is_terminal()) {
+            if (state.street() == Street::FLOP && board_dealt < 3) {
+                state = state.deal_flop(board_cards[0], board_cards[1], board_cards[2]);
+                board_dealt = 3;
+            } else if (state.street() == Street::TURN && board_dealt < 4) {
+                state = state.deal_turn(board_cards[3]);
+                board_dealt = 4;
+            } else if (state.street() == Street::RIVER && board_dealt < 5) {
+                state = state.deal_river(board_cards[4]);
+                board_dealt = 5;
+            } else {
+                break;
+            }
+        }
+
+        Action action;
+        if (rec.action_type == "fold")
+            action = Action::fold();
+        else if (rec.action_type == "check")
+            action = Action::check();
+        else if (rec.action_type == "call")
+            action = Action::call();
+        else if (rec.action_type == "bet" || rec.action_type == "raise")
+            action = Action::bet(rec.amount);
+        else {
+            log_error("Unknown action type: " + rec.action_type);
+            return 1;
+        }
+
+        action_history.push_back({state, action});
+        state = state.apply_action(action);
+    }
+
+    // Deal remaining board cards
+    while (state.is_chance_node() && !state.is_terminal()) {
+        if (state.street() == Street::FLOP && board_dealt < 3) {
+            state = state.deal_flop(board_cards[0], board_cards[1], board_cards[2]);
+            board_dealt = 3;
+        } else if (state.street() == Street::TURN && board_dealt < 4) {
+            state = state.deal_turn(board_cards[3]);
+            board_dealt = 4;
+        } else if (state.street() == Street::RIVER && board_dealt < 5) {
+            state = state.deal_river(board_cards[4]);
+            board_dealt = 5;
+        } else {
+            break;
+        }
+    }
+
+    if (state.street() != Street::RIVER) {
+        log_error("State is not on the river. Current street: " +
+                  std::to_string(static_cast<int>(state.street())));
+        return 1;
+    }
+
+    std::cout << "River subgame solving...\n"
+              << "  Hero:     seat " << hero_seat << " [" << card_to_string(hero_c0) << " "
+              << card_to_string(hero_c1) << "]\n"
+              << "  Opponent: seat " << opp_seat << "\n"
+              << "  Board:    ";
+    for (const auto& c : board_cards)
+        std::cout << card_to_string(c) << " ";
+    std::cout << "\n  Pot:      " << state.pot() << "\n"
+              << "  Iterations: " << num_iterations << "\n\n";
+
+    Timer timer;
+
+    // Build opponent range via Bayesian filtering
+    RangeManager range_mgr(blueprint, card_abs, action_abs);
+    Range opp_range =
+        range_mgr.build_opponent_range(opp_seat, action_history, hero_c0, hero_c1,
+                                       board_cards.data(), static_cast<int>(board_cards.size()));
+
+    // Count live combos in opponent range
+    int live_combos = 0;
+    for (int i = 0; i < Range::NUM_COMBOS; ++i)
+        if (opp_range.weights[i] > 0.0f)
+            live_combos++;
+    std::cout << "Opponent range: " << live_combos << " live combos\n";
+
+    // Solve subgame
+    SubgameCFR solver(action_abs, eval);
+    double ev =
+        solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat, num_iterations);
+
+    // Get and print strategy
+    auto actions = action_abs.get_actions(state);
+    int num_actions = static_cast<int>(actions.size());
+    float strategy[SubgameNodeData::MAX_ACTIONS];
+    solver.get_strategy(state, hero_c0, hero_c1, strategy, num_actions);
+
+    std::cout << "\nHero strategy:\n";
+    for (int a = 0; a < num_actions; ++a) {
+        std::string action_str;
+        switch (actions[a].type) {
+            case ActionType::FOLD:
+                action_str = "fold";
+                break;
+            case ActionType::CHECK:
+                action_str = "check";
+                break;
+            case ActionType::CALL:
+                action_str = "call";
+                break;
+            case ActionType::BET:
+                action_str = "bet " + std::to_string(actions[a].amount);
+                break;
+        }
+        std::cout << "  " << action_str << ": " << (strategy[a] * 100.0f) << "%\n";
+    }
+    std::cout << "\nHero EV: " << ev << "\n";
+    std::cout << "Solve time: " << timer.elapsed_ms() << " ms\n";
+
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -166,6 +394,8 @@ int main(int argc, char* argv[]) {
         return cmd_train();
     if (command == "query")
         return cmd_query();
+    if (command == "solve")
+        return cmd_solve();
 
     std::cerr << "Unknown command: " << command << "\n";
     print_usage();
