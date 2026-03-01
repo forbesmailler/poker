@@ -8,8 +8,8 @@ abstraction:
 
 action:
   preflop_raise_sizes: [0.75, 1.5]
-  flop_bet_sizes: [0.5, 1.0]
-  turn_bet_sizes: [0.5, 1.0]
+  flop_bet_sizes: [0.33, 0.67, 1.0]
+  turn_bet_sizes: [0.33, 0.67, 1.0]
   river_bet_sizes: [0.75, 1.5]
   include_all_in: true
   max_raises_per_round: 3
