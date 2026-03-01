@@ -77,3 +77,9 @@ target_include_directories(poker_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 include(GoogleTest)
 gtest_discover_tests(poker_tests)
+
+# ── Postflop bucketing tests (heavy, runs as single CTest entry) ────
+add_executable(postflop_tests ${TEST_DIR}/test_postflop_bucketing.cpp)
+target_link_libraries(postflop_tests PRIVATE poker_engine_lib GTest::gtest_main)
+target_include_directories(postflop_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME PostflopBucketing COMMAND postflop_tests)
