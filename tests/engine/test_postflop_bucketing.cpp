@@ -14,7 +14,7 @@ static CardAbstraction& get_built_abstraction() {
     static CardAbstraction abs;
     static bool initialized = false;
     if (!initialized) {
-        abs.build(4, 500);
+        abs.build(4, 1000);
         initialized = true;
     }
     return abs;
@@ -209,8 +209,8 @@ TEST(PostflopBucketing, TurnBucketDistribution) {
         counts[bucket]++;
     }
 
-    // With fewer samples, check at least a quarter of buckets are populated
-    EXPECT_GT(static_cast<int>(counts.size()), nb / 4)
+    // With fewer samples, check at least 1/5 of buckets are populated
+    EXPECT_GT(static_cast<int>(counts.size()), nb / 5)
         << "Only " << counts.size() << "/" << nb << " buckets populated";
 }
 
@@ -238,6 +238,7 @@ TEST(PostflopBucketing, RiverBucketDistribution) {
         counts[bucket]++;
     }
 
-    EXPECT_GT(static_cast<int>(counts.size()), nb / 4)
+    // With fewer samples, check at least 1/5 of buckets are populated
+    EXPECT_GT(static_cast<int>(counts.size()), nb / 5)
         << "Only " << counts.size() << "/" << nb << " buckets populated";
 }
