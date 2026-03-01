@@ -107,15 +107,6 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const 
             return 0;
         }
         case Street::FLOP: {
-            if (use_histograms_) {
-                // Equity-histogram bucketing: compute histogram, find nearest centroid
-                EquityCalculator eq;
-                auto hist =
-                    eq.compute_histogram(hole0, hole1, board, num_board_cards, get_evaluator(),
-                                         centroid_bins_, config::EQUITY_SAMPLES);
-                return nearest_centroid(hist.data(), 0);
-            }
-            // Fallback: avg river percentile
             const auto& eval = get_evaluator();
             Card cards[7];
             cards[0] = hole0;
@@ -138,15 +129,6 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const 
             return rank_to_bucket_[0][bin];
         }
         case Street::TURN: {
-            if (use_histograms_) {
-                // Equity-histogram bucketing: compute histogram, find nearest centroid
-                EquityCalculator eq;
-                auto hist =
-                    eq.compute_histogram(hole0, hole1, board, num_board_cards, get_evaluator(),
-                                         centroid_bins_, config::EQUITY_SAMPLES);
-                return nearest_centroid(hist.data(), 1);
-            }
-            // Fallback: avg river percentile
             const auto& eval = get_evaluator();
             Card cards[7];
             cards[0] = hole0;
@@ -533,10 +515,13 @@ void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int n
         int n_cards = (street_idx == 0) ? 3 : 4;  // board cards for flop/turn
         Timer t;
 
-        // --- Sample hands and compute histograms ---
-        std::vector<float> all_hists;  // flat: sample_count * bins
+        // --- Sample hands and compute histograms + equity percentiles ---
+        std::vector<float> all_hists;          // flat: sample_count * bins
+        std::vector<int> all_percentile_bins;  // equity percentile bin per sample
         std::mutex hist_mutex;
         std::atomic<int> sample_count{0};
+        const int num_perc_bins = static_cast<int>(rank_to_bucket_[street_idx].size());
+        const auto& river_table = rank_to_bucket_[2];
 
         // Generate deterministic samples
         auto sample_worker = [&](int tid) {
@@ -548,7 +533,7 @@ void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int n
 
                 // Generate random (hole, board) combo
                 CardMask used = 0;
-                Card cards[6];  // hole0, hole1, board0..board(n-1)
+                Card cards[7];  // hole0, hole1, board0..board(n-1), [turn], [river]
                 bool valid = true;
                 for (int i = 0; i < 2 + n_cards; ++i) {
                     int attempts = 0;
@@ -570,8 +555,36 @@ void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int n
                 auto hist = eq_calc.compute_histogram(cards[0], cards[1], cards + 2, n_cards, eval,
                                                       bins, equity_samples);
 
+                // Also compute equity percentile bin (same method as get_bucket fallback)
+                int perc_bin;
+                if (n_cards == 3) {
+                    // Flop: sampled rollout
+                    int sum =
+                        sampled_flop_avg(eval, cards, used, river_table, FLOP_ROLLOUT_SAMPLES);
+                    perc_bin = static_cast<int>(
+                        static_cast<double>(sum) / FLOP_ROLLOUT_SAMPLES * AVG_RESOLUTION + 0.5);
+                } else {
+                    // Turn: exhaustive 46-card rollout
+                    int sum = 0, count = 0;
+                    for (int c = 0; c < 52; ++c) {
+                        if (used & (1ULL << c))
+                            continue;
+                        cards[6] = static_cast<Card>(c);
+                        HandRank r = eval.evaluate(cards, 7);
+                        sum += river_table[r];
+                        ++count;
+                    }
+                    perc_bin =
+                        static_cast<int>(static_cast<double>(sum) / count * AVG_RESOLUTION + 0.5);
+                }
+                if (perc_bin < 0)
+                    perc_bin = 0;
+                if (perc_bin >= num_perc_bins)
+                    perc_bin = num_perc_bins - 1;
+
                 std::lock_guard<std::mutex> lock(hist_mutex);
                 all_hists.insert(all_hists.end(), hist.begin(), hist.end());
+                all_percentile_bins.push_back(perc_bin);
             }
         };
 
@@ -641,6 +654,11 @@ void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int n
             }
             std::sort(centroid_means.begin(), centroid_means.end());
 
+            // Build old→new index remapping
+            std::vector<int> old_to_new(nb);
+            for (int k = 0; k < nb; ++k)
+                old_to_new[centroid_means[k].second] = k;
+
             // Reorder centroids
             std::vector<float> sorted_centroids(nb * bins);
             for (int k = 0; k < nb; ++k) {
@@ -649,6 +667,71 @@ void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int n
                             sorted_centroids.data() + k * bins);
             }
             centroids_[street_idx] = sorted_centroids;
+
+            // Remap assignments to sorted centroid indices
+            for (int i = 0; i < actual_samples; ++i)
+                assignments[i] = old_to_new[assignments[i]];
+        }
+
+        // --- Rebuild rank_to_bucket_ using actual sample assignments ---
+        // For each percentile bin, find the majority cluster assignment
+        // from samples that fell into that bin.
+        {
+            auto& table = rank_to_bucket_[street_idx];
+            int num_bins_s = static_cast<int>(table.size());
+
+            // Accumulate cluster votes per percentile bin
+            // votes[bin][cluster] = count
+            std::vector<std::vector<int>> votes(num_bins_s, std::vector<int>(nb, 0));
+            for (int i = 0; i < actual_samples; ++i) {
+                int pbin = all_percentile_bins[i];
+                int cluster = assignments[i];
+                votes[pbin][cluster]++;
+            }
+
+            // For each percentile bin, pick the majority cluster
+            // For bins with no samples, interpolate from nearest populated bin
+            std::vector<int> populated_bins;
+            for (int b = 0; b < num_bins_s; ++b) {
+                int best_cluster = -1, best_count = 0;
+                for (int k = 0; k < nb; ++k) {
+                    if (votes[b][k] > best_count) {
+                        best_count = votes[b][k];
+                        best_cluster = k;
+                    }
+                }
+                if (best_cluster >= 0) {
+                    table[b] = static_cast<Bucket>(best_cluster);
+                    populated_bins.push_back(b);
+                }
+            }
+
+            // Fill unpopulated bins from nearest populated neighbor
+            if (!populated_bins.empty()) {
+                for (int b = 0; b < num_bins_s; ++b) {
+                    bool has_data = false;
+                    for (int k = 0; k < nb; ++k) {
+                        if (votes[b][k] > 0) {
+                            has_data = true;
+                            break;
+                        }
+                    }
+                    if (has_data)
+                        continue;
+
+                    // Find nearest populated bin
+                    int best_dist = num_bins_s;
+                    Bucket best_val = 0;
+                    for (int pb : populated_bins) {
+                        int d = std::abs(pb - b);
+                        if (d < best_dist) {
+                            best_dist = d;
+                            best_val = table[pb];
+                        }
+                    }
+                    table[b] = best_val;
+                }
+            }
         }
 
         log_info("  " + std::string(street_idx == 0 ? "Flop" : "Turn") + " histogram clustering (" +
