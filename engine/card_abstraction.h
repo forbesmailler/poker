@@ -1,9 +1,11 @@
 #pragma once
 
 #include "card.h"
+#include "hand_evaluator.h"
 #include "game_state.h"
 #include <cstdint>
 #include <vector>
+#include <array>
 #include <string>
 
 namespace poker {
@@ -30,19 +32,18 @@ class CardAbstraction {
    private:
     // Preflop: 169 canonical hands (lossless)
     std::vector<Bucket> preflop_buckets_;  // size 169
-    // Post-flop: indexed by canonical index → bucket
-    std::vector<Bucket> flop_buckets_;
-    std::vector<Bucket> turn_buckets_;
-    std::vector<Bucket> river_buckets_;
+
+    // Post-flop: rank_to_bucket_[street_idx][hand_rank] -> bucket
+    // street_idx: 0=FLOP, 1=TURN, 2=RIVER
+    std::array<std::vector<Bucket>, 3> rank_to_bucket_;
+
     bool built_ = false;
 
     // Map (hole0, hole1) to canonical preflop index 0-168
     static int canonical_preflop_index(Card c0, Card c1);
 
     void build_preflop_abstraction();
-    void build_flop_abstraction(int num_threads);
-    void build_turn_abstraction(int num_threads);
-    void build_river_abstraction(int num_threads);
+    void build_postflop_tables(const HandEvaluator& eval, int num_threads);
 };
 
 }  // namespace poker

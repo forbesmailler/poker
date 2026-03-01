@@ -2,7 +2,10 @@
 #include "generated_config.h"
 #include "utils.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <thread>
+#include <numeric>
 
 namespace poker {
 
@@ -63,18 +66,18 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const 
         }
         case Street::FLOP:
         case Street::TURN:
-        case Street::RIVER:
-            // For post-flop, use a hash-based bucket assignment
-            // In a full implementation, these would be precomputed
-            {
-                uint64_t hash = 0;
-                hash ^= static_cast<uint64_t>(hole0) * 2654435761ULL;
-                hash ^= static_cast<uint64_t>(hole1) * 40503ULL;
-                for (int i = 0; i < num_board_cards; ++i) {
-                    hash ^= static_cast<uint64_t>(board[i]) * (2654435761ULL + i * 12345ULL);
-                }
-                return static_cast<Bucket>(hash % num_buckets(street));
+        case Street::RIVER: {
+            const auto& eval = get_evaluator();
+            Card cards[7];
+            cards[0] = hole0;
+            cards[1] = hole1;
+            for (int i = 0; i < num_board_cards; ++i) {
+                cards[2 + i] = board[i];
             }
+            HandRank rank = eval.evaluate(cards, 2 + num_board_cards);
+            int table_idx = static_cast<int>(street) - 1;  // FLOP=0, TURN=1, RIVER=2
+            return rank_to_bucket_[table_idx][rank];
+        }
         default:
             return 0;
     }
@@ -95,17 +98,15 @@ int CardAbstraction::num_buckets(Street street) const {
     }
 }
 
-void CardAbstraction::build(int /*num_threads*/) {
+void CardAbstraction::build(int num_threads) {
     Timer timer;
     log_info("Building card abstraction...");
 
     build_preflop_abstraction();
     log_info("  Preflop: " + std::to_string(preflop_buckets_.size()) + " canonical hands");
 
-    // Post-flop abstractions are expensive — skip if not needed yet
-    // build_flop_abstraction(num_threads);
-    // build_turn_abstraction(num_threads);
-    // build_river_abstraction(num_threads);
+    const auto& eval = get_evaluator();
+    build_postflop_tables(eval, num_threads);
 
     built_ = true;
     log_info("Card abstraction built in " + std::to_string(timer.elapsed_seconds()) + "s");
@@ -120,21 +121,153 @@ void CardAbstraction::build_preflop_abstraction() {
     }
 }
 
-void CardAbstraction::build_flop_abstraction(int /*num_threads*/) {
-    // Compute equity histograms for all canonical flop situations
-    // Then cluster into flop_buckets using K-means with EMD distance
-    // For now, placeholder — full implementation would enumerate
-    // all canonical (hole_cards, flop) combinations
-    log_info("  Flop abstraction: placeholder (hash-based)");
+void CardAbstraction::build_postflop_tables(const HandEvaluator& eval, int num_threads) {
+    if (num_threads < 1) num_threads = 1;
+
+    const int table_size = static_cast<int>(MAX_HAND_RANK) + 1;
+
+    // Street configs: {num_cards, num_buckets, name}
+    struct StreetConfig {
+        int num_cards;
+        int buckets;
+        const char* name;
+    };
+    const StreetConfig streets[3] = {
+        {5, config::FLOP_BUCKETS, "Flop"},
+        {6, config::TURN_BUCKETS, "Turn"},
+        {7, config::RIVER_BUCKETS, "River"},
+    };
+
+    for (int s = 0; s < 3; ++s) {
+        Timer street_timer;
+        const int n = streets[s].num_cards;
+        const int nb = streets[s].buckets;
+
+        // Thread-local frequency arrays
+        std::vector<std::vector<uint64_t>> thread_freq(num_threads,
+                                                        std::vector<uint64_t>(table_size, 0));
+
+        // Work-stealing over outermost card index
+        std::atomic<int> next_c0{0};
+        const int max_c0 = 52 - n + 1;  // outermost card ranges [0, 52-n]
+
+        auto worker = [&](int tid) {
+            auto& freq = thread_freq[tid];
+            while (true) {
+                int c0 = next_c0.fetch_add(1);
+                if (c0 >= max_c0) break;
+
+                // Enumerate remaining cards with nested loops
+                // All cards are in strictly ascending order: c0 < c1 < c2 < ... < c(n-1)
+                Card cards[7];
+                cards[0] = static_cast<Card>(c0);
+
+                if (n == 5) {
+                    for (int c1 = c0 + 1; c1 < 49; ++c1) {
+                        cards[1] = static_cast<Card>(c1);
+                        for (int c2 = c1 + 1; c2 < 50; ++c2) {
+                            cards[2] = static_cast<Card>(c2);
+                            for (int c3 = c2 + 1; c3 < 51; ++c3) {
+                                cards[3] = static_cast<Card>(c3);
+                                for (int c4 = c3 + 1; c4 < 52; ++c4) {
+                                    cards[4] = static_cast<Card>(c4);
+                                    HandRank r = eval.evaluate(cards, 5);
+                                    ++freq[r];
+                                }
+                            }
+                        }
+                    }
+                } else if (n == 6) {
+                    for (int c1 = c0 + 1; c1 < 48; ++c1) {
+                        cards[1] = static_cast<Card>(c1);
+                        for (int c2 = c1 + 1; c2 < 49; ++c2) {
+                            cards[2] = static_cast<Card>(c2);
+                            for (int c3 = c2 + 1; c3 < 50; ++c3) {
+                                cards[3] = static_cast<Card>(c3);
+                                for (int c4 = c3 + 1; c4 < 51; ++c4) {
+                                    cards[4] = static_cast<Card>(c4);
+                                    for (int c5 = c4 + 1; c5 < 52; ++c5) {
+                                        cards[5] = static_cast<Card>(c5);
+                                        HandRank r = eval.evaluate(cards, 6);
+                                        ++freq[r];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {  // n == 7
+                    for (int c1 = c0 + 1; c1 < 47; ++c1) {
+                        cards[1] = static_cast<Card>(c1);
+                        for (int c2 = c1 + 1; c2 < 48; ++c2) {
+                            cards[2] = static_cast<Card>(c2);
+                            for (int c3 = c2 + 1; c3 < 49; ++c3) {
+                                cards[3] = static_cast<Card>(c3);
+                                for (int c4 = c3 + 1; c4 < 50; ++c4) {
+                                    cards[4] = static_cast<Card>(c4);
+                                    for (int c5 = c4 + 1; c5 < 51; ++c5) {
+                                        cards[5] = static_cast<Card>(c5);
+                                        for (int c6 = c5 + 1; c6 < 52; ++c6) {
+                                            cards[6] = static_cast<Card>(c6);
+                                            HandRank r = eval.evaluate(cards, 7);
+                                            ++freq[r];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Launch threads
+        std::vector<std::thread> threads;
+        for (int t = 0; t < num_threads; ++t) {
+            threads.emplace_back(worker, t);
+        }
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        // Merge frequency arrays
+        std::vector<uint64_t> freq(table_size, 0);
+        for (int t = 0; t < num_threads; ++t) {
+            for (int i = 0; i < table_size; ++i) {
+                freq[i] += thread_freq[t][i];
+            }
+        }
+
+        // Build CDF and assign buckets
+        rank_to_bucket_[s].resize(table_size);
+        uint64_t total = 0;
+        for (int i = 0; i < table_size; ++i) {
+            total += freq[i];
+        }
+
+        uint64_t cumulative = 0;
+        Bucket last_bucket = 0;
+        for (int i = 0; i < table_size; ++i) {
+            if (freq[i] > 0) {
+                cumulative += freq[i];
+                // bucket = floor(cumulative / total * num_buckets), clamped to [0, nb-1]
+                Bucket b = static_cast<Bucket>(
+                    std::min(static_cast<uint64_t>(nb - 1),
+                             cumulative * static_cast<uint64_t>(nb) / total));
+                rank_to_bucket_[s][i] = b;
+                last_bucket = b;
+            } else {
+                // Carry forward last valid bucket for empty HandRank slots
+                rank_to_bucket_[s][i] = last_bucket;
+            }
+        }
+
+        log_info("  " + std::string(streets[s].name) + " (" + std::to_string(n) +
+                 " cards): " + std::to_string(total) + " combos enumerated in " +
+                 std::to_string(street_timer.elapsed_seconds()) + "s");
+    }
 }
 
-void CardAbstraction::build_turn_abstraction(int /*num_threads*/) {
-    log_info("  Turn abstraction: placeholder (hash-based)");
-}
-
-void CardAbstraction::build_river_abstraction(int /*num_threads*/) {
-    log_info("  River abstraction: placeholder (hash-based)");
-}
+static constexpr uint8_t ABSTRACTION_VERSION = 2;
 
 void CardAbstraction::save(const std::string& path) const {
     std::ofstream out(path, std::ios::binary);
@@ -143,10 +276,11 @@ void CardAbstraction::save(const std::string& path) const {
         return;
     }
 
+    write_binary(out, ABSTRACTION_VERSION);
     write_vector_binary(out, preflop_buckets_);
-    write_vector_binary(out, flop_buckets_);
-    write_vector_binary(out, turn_buckets_);
-    write_vector_binary(out, river_buckets_);
+    for (int s = 0; s < 3; ++s) {
+        write_vector_binary(out, rank_to_bucket_[s]);
+    }
 
     log_info("Saved card abstraction to " + path);
 }
@@ -158,13 +292,21 @@ void CardAbstraction::load(const std::string& path) {
         return;
     }
 
-    read_vector_binary(in, preflop_buckets_);
-    read_vector_binary(in, flop_buckets_);
-    read_vector_binary(in, turn_buckets_);
-    read_vector_binary(in, river_buckets_);
-    built_ = true;
+    uint8_t version;
+    read_binary(in, version);
 
-    log_info("Loaded card abstraction from " + path);
+    if (version == 2) {
+        read_vector_binary(in, preflop_buckets_);
+        for (int s = 0; s < 3; ++s) {
+            read_vector_binary(in, rank_to_bucket_[s]);
+        }
+    } else {
+        log_error("Unknown abstraction version: " + std::to_string(version));
+        return;
+    }
+
+    built_ = true;
+    log_info("Loaded card abstraction (v" + std::to_string(version) + ") from " + path);
 }
 
 }  // namespace poker

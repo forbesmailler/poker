@@ -11,6 +11,7 @@ namespace poker {
 // category = rank >> 12 (0=high card, 1=pair, ..., 8=straight flush)
 // sub-rank = rank & 0xFFF (ordering within category)
 using HandRank = uint16_t;
+static constexpr HandRank MAX_HAND_RANK = 0x8FFF;  // 36863, encoding ceiling
 
 // Hand categories
 enum HandCategory : int {
