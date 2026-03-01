@@ -31,7 +31,7 @@ class InfoSetStore {
 
    private:
     static constexpr uint32_t EMPTY_SLOT = UINT32_MAX;
-    static constexpr size_t CHUNK_SHIFT = 16;  // 64K entries per chunk
+    static constexpr size_t CHUNK_SHIFT = 12;  // 4K entries per chunk
     static constexpr size_t CHUNK_SIZE = size_t(1) << CHUNK_SHIFT;
     static constexpr size_t CHUNK_MASK = CHUNK_SIZE - 1;
     static constexpr float MAX_LOAD_FACTOR = 0.7f;
