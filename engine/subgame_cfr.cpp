@@ -9,12 +9,16 @@ SubgameCFR::SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator&
     : action_abs_(action_abs), eval_(eval) {}
 
 double SubgameCFR::solve(const GameState& root, Card hero_c0, Card hero_c1, const Range& opp_range,
-                         int hero_player, int opp_player, int num_iterations) {
+                         int hero_player, int opp_player, int num_iterations,
+                         bool depth_limited, int num_equity_samples) {
     nodes_.clear();
     hero_player_ = hero_player;
+    depth_limited_ = depth_limited;
+    num_equity_samples_ = num_equity_samples;
 
     double ev = 0.0;
     for (int i = 0; i < num_iterations; ++i) {
+        cfr_iteration_ = i;
         Range opp_reach = opp_range;
         ev = traverse(root, hero_c0, hero_c1, opp_reach, 1.0, hero_player, opp_player);
     }
@@ -44,24 +48,32 @@ double SubgameCFR::traverse(const GameState& state, Card hero_c0, Card hero_c1,
         return terminal_value(state, hero_c0, hero_c1, opp_reach, hero_player, opp_player);
     }
 
-    // Chance node: deal the river card, enumerate all possibilities
+    // Chance node: deal the next community card
     if (state.is_chance_node()) {
+        bool is_turn_deal = (state.street() == Street::TURN && state.num_board_cards() < 4);
+
+        // Depth-limited: at the turn chance node, estimate value via Monte Carlo equity
+        if (depth_limited_ && is_turn_deal) {
+            return estimate_equity_ev(state, hero_c0, hero_c1, opp_reach, hero_player, opp_player);
+        }
+
         // Build dead card mask: hero cards + board cards already dealt
         CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
         for (int i = 0; i < state.num_board_cards(); ++i)
             dead |= card_bit(state.board()[i]);
 
-        int num_river_cards = 0;
+        int num_cards_dealt = 0;
         double total_ev = 0.0;
 
         for (int c = 0; c < NUM_CARDS; ++c) {
             if (dead & card_bit(static_cast<Card>(c)))
                 continue;
 
-            // Deal this river card
-            GameState next = state.deal_river(static_cast<Card>(c));
+            // Deal this card (turn or river)
+            GameState next = is_turn_deal ? state.deal_turn(static_cast<Card>(c))
+                                          : state.deal_river(static_cast<Card>(c));
 
-            // Filter opp_reach: zero out combos that use this river card
+            // Filter opp_reach: zero out combos that use this card
             Range filtered = opp_reach;
             for (int j = 0; j < Range::NUM_COMBOS; ++j) {
                 if (filtered.weights[j] == 0.0f)
@@ -74,11 +86,11 @@ double SubgameCFR::traverse(const GameState& state, Card hero_c0, Card hero_c1,
 
             total_ev +=
                 traverse(next, hero_c0, hero_c1, filtered, hero_reach, hero_player, opp_player);
-            num_river_cards++;
+            num_cards_dealt++;
         }
 
-        // Average over all river cards (uniform chance probability)
-        return (num_river_cards > 0) ? total_ev / num_river_cards : 0.0;
+        // Average over all dealt cards (uniform chance probability)
+        return (num_cards_dealt > 0) ? total_ev / num_cards_dealt : 0.0;
     }
 
     int acting_player = state.current_player();
@@ -262,6 +274,80 @@ double SubgameCFR::terminal_value(const GameState& state, Card hero_c0, Card her
     }
 
     return ev;
+}
+
+double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card hero_c1,
+                                      const Range& opp_reach, int hero_player, int /*opp_player*/) {
+    int pot = state.pot();
+    int hero_invested = state.players()[hero_player].total_invested;
+
+    // Build dead card mask: hero cards + board (3 flop cards)
+    CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
+    for (int i = 0; i < state.num_board_cards(); ++i)
+        dead |= card_bit(state.board()[i]);
+
+    // Collect live cards for sampling turn+river
+    Card live_cards[NUM_CARDS];
+    int num_live = 0;
+    for (int c = 0; c < NUM_CARDS; ++c) {
+        if (!(dead & card_bit(static_cast<Card>(c))))
+            live_cards[num_live++] = static_cast<Card>(c);
+    }
+
+    // Deterministic but iteration-varying seed
+    uint64_t seed = static_cast<uint64_t>(hero_c0) * 53 * 53 +
+                    static_cast<uint64_t>(hero_c1) * 53 +
+                    static_cast<uint64_t>(cfr_iteration_) * 997 +
+                    state.action_history_hash();
+    Rng rng(seed);
+
+    const auto& board = state.board();
+    double total_ev = 0.0;
+
+    for (int s = 0; s < num_equity_samples_; ++s) {
+        // Sample turn + river from live cards (without replacement)
+        int idx0 = rng.next_int(num_live);
+        int idx1 = rng.next_int(num_live - 1);
+        if (idx1 >= idx0) idx1++;
+
+        Card turn_card = live_cards[idx0];
+        Card river_card = live_cards[idx1];
+
+        CardMask sample_dead = dead | card_bit(turn_card) | card_bit(river_card);
+
+        // Evaluate hero's 7-card hand
+        HandRank hero_rank = eval_.evaluate(hero_c0, hero_c1, board[0], board[1], board[2],
+                                            turn_card, river_card);
+
+        // Sum over all live opponent combos
+        for (int j = 0; j < Range::NUM_COMBOS; ++j) {
+            if (opp_reach.weights[j] == 0.0f)
+                continue;
+
+            Card oc0, oc1;
+            Range::combo_from_index(j, oc0, oc1);
+
+            // Skip combos conflicting with hero, board, or sampled cards
+            if ((sample_dead & card_bit(oc0)) || (sample_dead & card_bit(oc1)))
+                continue;
+
+            HandRank opp_rank = eval_.evaluate(oc0, oc1, board[0], board[1], board[2],
+                                               turn_card, river_card);
+
+            int cmp = HandEvaluator::compare(hero_rank, opp_rank);
+            double payoff;
+            if (cmp > 0) {
+                payoff = static_cast<double>(pot - hero_invested);
+            } else if (cmp < 0) {
+                payoff = -static_cast<double>(hero_invested);
+            } else {
+                payoff = static_cast<double>(pot) / 2.0 - static_cast<double>(hero_invested);
+            }
+            total_ev += opp_reach.weights[j] * payoff;
+        }
+    }
+
+    return total_ev / num_equity_samples_;
 }
 
 }  // namespace poker

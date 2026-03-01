@@ -103,6 +103,24 @@ TEST(Range, UniformInitialization) {
 
 // ---- SubgameCFR tests ----
 
+// Helper: create a heads-up flop state (3 board cards dealt, ready for flop action)
+static GameState make_flop_state(Card b0, Card b1, Card b2, int hero_seat, int opp_seat) {
+    std::array<int32_t, MAX_PLAYERS> stacks = {};
+    stacks[hero_seat] = 200;
+    stacks[opp_seat] = 200;
+
+    GameState state = GameState::new_hand(stacks, 0, 1, 2);
+
+    // Preflop: limp in (SB calls, BB checks)
+    state = state.apply_action(Action::call());
+    state = state.apply_action(Action::check());
+
+    // Deal flop
+    state = state.deal_flop(b0, b1, b2);
+
+    return state;
+}
+
 // Helper: create a heads-up river state where both players have acted to the river
 // Uses seats 0 and 1 with stacks that work for a clean scenario
 static GameState make_river_state(Card hero_c0, Card hero_c1, Card opp_c0, Card opp_c1,
@@ -285,4 +303,123 @@ TEST(SubgameCFR, FoldTerminalValue) {
             EXPECT_TRUE(folded.is_terminal());
         }
     }
+}
+
+// ---- Depth-Limited Flop Subgame Tests ----
+
+TEST(SubgameCFR, DepthLimitedBasic) {
+    const HandEvaluator& eval = get_evaluator();
+    ActionAbstraction action_abs;
+
+    Card hero_c0 = string_to_card("As");
+    Card hero_c1 = string_to_card("Ks");
+    Card b0 = string_to_card("2h");
+    Card b1 = string_to_card("7d");
+    Card b2 = string_to_card("Tc");
+
+    int hero_seat = 1, opp_seat = 0;
+    GameState state = make_flop_state(b0, b1, b2, hero_seat, opp_seat);
+
+    CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
+    for (int i = 0; i < 3; ++i)
+        dead |= card_bit(state.board()[i]);
+
+    Range opp_range;
+    opp_range.init_uniform(dead);
+
+    SubgameCFR solver(action_abs, eval);
+    double ev = solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat,
+                             50, /*depth_limited=*/true, /*num_equity_samples=*/30);
+
+    // EV should be finite
+    EXPECT_FALSE(std::isnan(ev));
+    EXPECT_FALSE(std::isinf(ev));
+
+    // Strategy should sum to ~1.0
+    auto actions = action_abs.get_actions(state);
+    int num_actions = static_cast<int>(actions.size());
+    float strategy[SubgameNodeData::MAX_ACTIONS];
+    solver.get_strategy(state, hero_c0, hero_c1, strategy, num_actions);
+
+    float total = 0.0f;
+    for (int a = 0; a < num_actions; ++a)
+        total += strategy[a];
+    EXPECT_NEAR(total, 1.0f, 1e-4f);
+}
+
+TEST(SubgameCFR, DepthLimitedNutsBets) {
+    const HandEvaluator& eval = get_evaluator();
+    ActionAbstraction action_abs;
+
+    // Pocket aces on a dry board — should bet frequently
+    // Hero is seat 1 (BB, acts first postflop in HU) for faster test
+    Card hero_c0 = string_to_card("Ah");
+    Card hero_c1 = string_to_card("Ad");
+    Card b0 = string_to_card("2c");
+    Card b1 = string_to_card("7s");
+    Card b2 = string_to_card("Td");
+
+    int hero_seat = 1, opp_seat = 0;
+    GameState state = make_flop_state(b0, b1, b2, hero_seat, opp_seat);
+
+    CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
+    for (int i = 0; i < 3; ++i)
+        dead |= card_bit(state.board()[i]);
+
+    Range opp_range;
+    opp_range.init_uniform(dead);
+
+    SubgameCFR solver(action_abs, eval);
+    solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat,
+                 20, /*depth_limited=*/true, /*num_equity_samples=*/20);
+
+    auto actions = action_abs.get_actions(state);
+    int num_actions = static_cast<int>(actions.size());
+    float strategy[SubgameNodeData::MAX_ACTIONS];
+    solver.get_strategy(state, hero_c0, hero_c1, strategy, num_actions);
+
+    // Aces should bet at >30% frequency on a dry flop even with few iterations
+    float bet_freq = 0.0f;
+    for (int a = 0; a < num_actions; ++a) {
+        if (actions[a].type == ActionType::BET)
+            bet_freq += strategy[a];
+    }
+    EXPECT_GT(bet_freq, 0.30f) << "Aces should bet frequently, got " << (bet_freq * 100) << "%";
+}
+
+TEST(SubgameCFR, DepthLimitedConvergence) {
+    const HandEvaluator& eval = get_evaluator();
+    ActionAbstraction action_abs;
+
+    Card hero_c0 = string_to_card("Ks");
+    Card hero_c1 = string_to_card("Qh");
+    Card b0 = string_to_card("2c");
+    Card b1 = string_to_card("7d");
+    Card b2 = string_to_card("Tc");
+
+    int hero_seat = 1, opp_seat = 0;
+    GameState state = make_flop_state(b0, b1, b2, hero_seat, opp_seat);
+
+    CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
+    for (int i = 0; i < 3; ++i)
+        dead |= card_bit(state.board()[i]);
+
+    Range opp_range;
+    opp_range.init_uniform(dead);
+
+    // Solve with 20 iterations
+    SubgameCFR solver1(action_abs, eval);
+    double ev20 = solver1.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat,
+                                20, /*depth_limited=*/true, /*num_equity_samples=*/20);
+
+    // Solve with 40 iterations
+    SubgameCFR solver2(action_abs, eval);
+    double ev40 = solver2.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat,
+                                40, /*depth_limited=*/true, /*num_equity_samples=*/20);
+
+    // EV should stabilize: difference within 25% of pot
+    double diff = std::abs(ev40 - ev20);
+    int pot = state.pot();
+    EXPECT_LT(diff, pot * 0.25)
+        << "EV didn't converge: ev20=" << ev20 << " ev40=" << ev40 << " pot=" << pot;
 }

@@ -4,6 +4,7 @@
 #include "game_state.h"
 #include "hand_evaluator.h"
 #include "range_manager.h"
+#include "rng.h"
 #include <unordered_map>
 #include <cstdint>
 
@@ -63,9 +64,12 @@ class SubgameCFR {
    public:
     SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator& eval);
 
-    // Solve river subgame. Returns hero EV.
+    // Solve subgame. Returns hero EV.
+    // If depth_limited=true, solves only the current betting round and estimates
+    // turn leaf values via Monte Carlo equity (Pluribus-style depth-limited solving).
     double solve(const GameState& root, Card hero_c0, Card hero_c1, const Range& opp_range,
-                 int hero_player, int opp_player, int num_iterations = 1000);
+                 int hero_player, int opp_player, int num_iterations = 1000,
+                 bool depth_limited = false, int num_equity_samples = 200);
 
     // Extract hero's converged strategy at root
     void get_strategy(const GameState& root, Card hero_c0, Card hero_c1, float* out,
@@ -76,6 +80,9 @@ class SubgameCFR {
     const HandEvaluator& eval_;
     std::unordered_map<SubgameKey, SubgameNodeData> nodes_;
     int hero_player_ = 0;  // Set by solve()
+    bool depth_limited_ = false;
+    int num_equity_samples_ = 200;
+    int cfr_iteration_ = 0;
 
     // Vanilla CFR traversal
     // Returns EV for hero_player
@@ -85,6 +92,11 @@ class SubgameCFR {
     // Compute expected value at a terminal node (fold or showdown)
     double terminal_value(const GameState& state, Card hero_c0, Card hero_c1,
                           const Range& opp_reach, int hero_player, int opp_player) const;
+
+    // Estimate EV at a turn chance node via Monte Carlo equity sampling
+    // Used in depth-limited solving to avoid expanding the turn+river tree
+    double estimate_equity_ev(const GameState& state, Card hero_c0, Card hero_c1,
+                              const Range& opp_reach, int hero_player, int opp_player);
 };
 
 }  // namespace poker
