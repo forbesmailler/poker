@@ -62,6 +62,7 @@ void Trainer::train(const TrainingConfig& cfg) {
     log_info("  Threads:     " + std::to_string(cfg.num_threads));
 
     Timer timer;
+    int64_t last_checkpoint = start_iter;
 
     std::vector<std::thread> threads;
     threads.reserve(cfg.num_threads);
@@ -90,9 +91,12 @@ void Trainer::train(const TrainingConfig& cfg) {
             log_info(oss.str());
         }
 
-        // Checkpoint
-        if (cfg.checkpoint_interval > 0 && current > 0 && current % cfg.checkpoint_interval == 0) {
-            save_checkpoint(static_cast<int>(current), cfg);
+        // Checkpoint when crossing a checkpoint_interval boundary
+        if (cfg.checkpoint_interval > 0 && current > 0 &&
+            current / cfg.checkpoint_interval > last_checkpoint / cfg.checkpoint_interval) {
+            int64_t cp_iter = (current / cfg.checkpoint_interval) * cfg.checkpoint_interval;
+            save_checkpoint(static_cast<int>(cp_iter), cfg);
+            last_checkpoint = current;
         }
     }
 
