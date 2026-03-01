@@ -1,9 +1,11 @@
 #include "card_abstraction.h"
+#include "equity_calculator.h"
 #include "generated_config.h"
 #include "utils.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <mutex>
 #include <thread>
 #include <numeric>
 
@@ -105,7 +107,15 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const 
             return 0;
         }
         case Street::FLOP: {
-            // Sampled rollout: average river percentile over random turn+river completions
+            if (use_histograms_) {
+                // Equity-histogram bucketing: compute histogram, find nearest centroid
+                EquityCalculator eq;
+                auto hist =
+                    eq.compute_histogram(hole0, hole1, board, num_board_cards, get_evaluator(),
+                                         centroid_bins_, config::EQUITY_SAMPLES);
+                return nearest_centroid(hist.data(), 0);
+            }
+            // Fallback: avg river percentile
             const auto& eval = get_evaluator();
             Card cards[7];
             cards[0] = hole0;
@@ -128,7 +138,15 @@ Bucket CardAbstraction::get_bucket(Street street, Card hole0, Card hole1, const 
             return rank_to_bucket_[0][bin];
         }
         case Street::TURN: {
-            // Full rollout: average river percentile over all 46 possible river cards
+            if (use_histograms_) {
+                // Equity-histogram bucketing: compute histogram, find nearest centroid
+                EquityCalculator eq;
+                auto hist =
+                    eq.compute_histogram(hole0, hole1, board, num_board_cards, get_evaluator(),
+                                         centroid_bins_, config::EQUITY_SAMPLES);
+                return nearest_centroid(hist.data(), 1);
+            }
+            // Fallback: avg river percentile
             const auto& eval = get_evaluator();
             Card cards[7];
             cards[0] = hole0;
@@ -467,9 +485,181 @@ void CardAbstraction::build_postflop_tables(const HandEvaluator& eval, int num_t
         log_info("  Turn (6 cards, full rollout x46) built in " +
                  std::to_string(t.elapsed_seconds()) + "s");
     }
+
+    // --- 4. Equity-histogram centroids for flop/turn ---
+    build_histogram_centroids(eval, num_threads, max_combos);
 }
 
-static constexpr uint8_t ABSTRACTION_VERSION = 3;
+Bucket CardAbstraction::nearest_centroid(const float* hist, int street_idx) const {
+    int nb = (street_idx == 0) ? config::FLOP_BUCKETS : config::TURN_BUCKETS;
+    int bins = centroid_bins_;
+    const float* centroids = centroids_[street_idx].data();
+
+    Bucket best = 0;
+    float best_dist = std::numeric_limits<float>::max();
+
+    for (int k = 0; k < nb; ++k) {
+        // EMD between hist and centroid k
+        const float* centroid = centroids + k * bins;
+        float dist = 0.0f;
+        float cdf_diff = 0.0f;
+        for (int i = 0; i < bins; ++i) {
+            cdf_diff += hist[i] - centroid[i];
+            dist += std::fabs(cdf_diff);
+        }
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = static_cast<Bucket>(k);
+        }
+    }
+    return best;
+}
+
+void CardAbstraction::build_histogram_centroids(const HandEvaluator& eval, int num_threads,
+                                                int64_t max_combos) {
+    const int bins = config::HISTOGRAM_BINS;
+    const int equity_samples = config::EQUITY_SAMPLES;
+    centroid_bins_ = bins;
+
+    // Sample hands, compute histograms, and cluster with k-means
+    // We sample a fixed number of hands per street to keep memory bounded
+    const int max_samples =
+        (max_combos > 0) ? static_cast<int>(std::min(max_combos, int64_t(5000))) : 5000;
+
+    EquityCalculator eq_calc;
+
+    for (int street_idx = 0; street_idx < 2; ++street_idx) {
+        int nb = (street_idx == 0) ? config::FLOP_BUCKETS : config::TURN_BUCKETS;
+        int n_cards = (street_idx == 0) ? 3 : 4;  // board cards for flop/turn
+        Timer t;
+
+        // --- Sample hands and compute histograms ---
+        std::vector<float> all_hists;  // flat: sample_count * bins
+        std::mutex hist_mutex;
+        std::atomic<int> sample_count{0};
+
+        // Generate deterministic samples
+        auto sample_worker = [&](int tid) {
+            uint64_t rng_state = 12345ULL + tid * 777ULL + street_idx * 999ULL;
+            while (true) {
+                int idx = sample_count.fetch_add(1);
+                if (idx >= max_samples)
+                    return;
+
+                // Generate random (hole, board) combo
+                CardMask used = 0;
+                Card cards[6];  // hole0, hole1, board0..board(n-1)
+                bool valid = true;
+                for (int i = 0; i < 2 + n_cards; ++i) {
+                    int attempts = 0;
+                    do {
+                        cards[i] = static_cast<Card>(splitmix64(rng_state) % 52);
+                        if (++attempts > 200) {
+                            valid = false;
+                            break;
+                        }
+                    } while (used & card_bit(cards[i]));
+                    if (!valid)
+                        break;
+                    used |= card_bit(cards[i]);
+                }
+                if (!valid)
+                    continue;
+
+                // Compute equity histogram
+                auto hist = eq_calc.compute_histogram(cards[0], cards[1], cards + 2, n_cards, eval,
+                                                      bins, equity_samples);
+
+                std::lock_guard<std::mutex> lock(hist_mutex);
+                all_hists.insert(all_hists.end(), hist.begin(), hist.end());
+            }
+        };
+
+        std::vector<std::thread> threads;
+        for (int ti = 0; ti < num_threads; ++ti)
+            threads.emplace_back(sample_worker, ti);
+        for (auto& th : threads)
+            th.join();
+
+        int actual_samples = static_cast<int>(all_hists.size()) / bins;
+        if (actual_samples < nb) {
+            log_info("  " + std::string(street_idx == 0 ? "Flop" : "Turn") +
+                     " histogram: too few samples (" + std::to_string(actual_samples) +
+                     "), skipping clustering");
+            continue;
+        }
+
+        // --- K-means clustering with EMD distance ---
+        // Initialize centroids from evenly-spaced samples
+        centroids_[street_idx].resize(nb * bins);
+        for (int k = 0; k < nb; ++k) {
+            int src = k * actual_samples / nb;
+            std::copy_n(all_hists.data() + src * bins, bins,
+                        centroids_[street_idx].data() + k * bins);
+        }
+
+        // K-means iterations
+        std::vector<int> assignments(actual_samples, 0);
+        const int kmeans_iters = 20;
+
+        for (int iter = 0; iter < kmeans_iters; ++iter) {
+            // Assignment step: find nearest centroid for each sample
+            for (int i = 0; i < actual_samples; ++i) {
+                assignments[i] = nearest_centroid(all_hists.data() + i * bins, street_idx);
+            }
+
+            // Update step: recompute centroids as mean of assigned samples
+            std::vector<float> new_centroids(nb * bins, 0.0f);
+            std::vector<int> counts(nb, 0);
+
+            for (int i = 0; i < actual_samples; ++i) {
+                int k = assignments[i];
+                counts[k]++;
+                for (int b = 0; b < bins; ++b)
+                    new_centroids[k * bins + b] += all_hists[i * bins + b];
+            }
+
+            for (int k = 0; k < nb; ++k) {
+                if (counts[k] > 0) {
+                    for (int b = 0; b < bins; ++b)
+                        new_centroids[k * bins + b] /= static_cast<float>(counts[k]);
+                }
+            }
+
+            centroids_[street_idx] = new_centroids;
+        }
+
+        // Sort centroids by mean equity so that higher bucket = stronger hand
+        {
+            // Compute mean equity for each centroid (weighted average of bin positions)
+            std::vector<std::pair<float, int>> centroid_means(nb);
+            for (int k = 0; k < nb; ++k) {
+                float mean = 0.0f;
+                for (int b = 0; b < bins; ++b)
+                    mean += centroids_[street_idx][k * bins + b] * (b + 0.5f) / bins;
+                centroid_means[k] = {mean, k};
+            }
+            std::sort(centroid_means.begin(), centroid_means.end());
+
+            // Reorder centroids
+            std::vector<float> sorted_centroids(nb * bins);
+            for (int k = 0; k < nb; ++k) {
+                int src = centroid_means[k].second;
+                std::copy_n(centroids_[street_idx].data() + src * bins, bins,
+                            sorted_centroids.data() + k * bins);
+            }
+            centroids_[street_idx] = sorted_centroids;
+        }
+
+        log_info("  " + std::string(street_idx == 0 ? "Flop" : "Turn") + " histogram clustering (" +
+                 std::to_string(actual_samples) + " samples, " + std::to_string(nb) +
+                 " buckets) built in " + std::to_string(t.elapsed_seconds()) + "s");
+    }
+
+    use_histograms_ = !centroids_[0].empty() && !centroids_[1].empty();
+}
+
+static constexpr uint8_t ABSTRACTION_VERSION = 4;
 
 void CardAbstraction::save(const std::string& path) const {
     std::ofstream out(path, std::ios::binary);
@@ -482,6 +672,16 @@ void CardAbstraction::save(const std::string& path) const {
     write_vector_binary(out, preflop_buckets_);
     for (int s = 0; s < 3; ++s) {
         write_vector_binary(out, rank_to_bucket_[s]);
+    }
+
+    // V4: equity-histogram centroids
+    write_binary(out, centroid_bins_);
+    uint8_t has_hist = use_histograms_ ? 1 : 0;
+    write_binary(out, has_hist);
+    if (use_histograms_) {
+        for (int s = 0; s < 2; ++s) {
+            write_vector_binary(out, centroids_[s]);
+        }
     }
 
     log_info("Saved card abstraction to " + path);
@@ -497,10 +697,22 @@ void CardAbstraction::load(const std::string& path) {
     uint8_t version;
     read_binary(in, version);
 
-    if (version == 3) {
+    if (version == 3 || version == 4) {
         read_vector_binary(in, preflop_buckets_);
         for (int s = 0; s < 3; ++s) {
             read_vector_binary(in, rank_to_bucket_[s]);
+        }
+
+        if (version >= 4) {
+            read_binary(in, centroid_bins_);
+            uint8_t has_hist;
+            read_binary(in, has_hist);
+            use_histograms_ = (has_hist != 0);
+            if (use_histograms_) {
+                for (int s = 0; s < 2; ++s) {
+                    read_vector_binary(in, centroids_[s]);
+                }
+            }
         }
     } else {
         log_error("Unknown abstraction version: " + std::to_string(version));
@@ -508,7 +720,8 @@ void CardAbstraction::load(const std::string& path) {
     }
 
     built_ = true;
-    log_info("Loaded card abstraction (v" + std::to_string(version) + ") from " + path);
+    log_info("Loaded card abstraction (v" + std::to_string(version) +
+             (use_histograms_ ? ", histogram" : "") + ") from " + path);
 }
 
 }  // namespace poker

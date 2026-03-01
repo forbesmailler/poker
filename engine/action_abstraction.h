@@ -8,7 +8,12 @@ namespace poker {
 
 class ActionAbstraction {
    public:
+    // Default: loads bet sizes from config
     ActionAbstraction();
+
+    // Custom: explicit bet sizes per street (for subgame solving with finer sizing)
+    ActionAbstraction(const std::vector<BetSize>& preflop, const std::vector<BetSize>& flop,
+                      const std::vector<BetSize>& turn, const std::vector<BetSize>& river);
 
     // Get legal abstract actions for current state
     std::vector<Action> get_actions(const GameState& state) const;

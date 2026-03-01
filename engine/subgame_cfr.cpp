@@ -44,6 +44,43 @@ double SubgameCFR::traverse(const GameState& state, Card hero_c0, Card hero_c1,
         return terminal_value(state, hero_c0, hero_c1, opp_reach, hero_player, opp_player);
     }
 
+    // Chance node: deal the river card, enumerate all possibilities
+    if (state.is_chance_node()) {
+        // Build dead card mask: hero cards + board cards already dealt
+        CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
+        for (int i = 0; i < state.num_board_cards(); ++i)
+            dead |= card_bit(state.board()[i]);
+
+        int num_river_cards = 0;
+        double total_ev = 0.0;
+
+        for (int c = 0; c < NUM_CARDS; ++c) {
+            if (dead & card_bit(static_cast<Card>(c)))
+                continue;
+
+            // Deal this river card
+            GameState next = state.deal_river(static_cast<Card>(c));
+
+            // Filter opp_reach: zero out combos that use this river card
+            Range filtered = opp_reach;
+            for (int j = 0; j < Range::NUM_COMBOS; ++j) {
+                if (filtered.weights[j] == 0.0f)
+                    continue;
+                Card oc0, oc1;
+                Range::combo_from_index(j, oc0, oc1);
+                if (oc0 == c || oc1 == c)
+                    filtered.weights[j] = 0.0f;
+            }
+
+            total_ev +=
+                traverse(next, hero_c0, hero_c1, filtered, hero_reach, hero_player, opp_player);
+            num_river_cards++;
+        }
+
+        // Average over all river cards (uniform chance probability)
+        return (num_river_cards > 0) ? total_ev / num_river_cards : 0.0;
+    }
+
     int acting_player = state.current_player();
     auto actions = action_abs_.get_actions(state);
     int num_actions = static_cast<int>(actions.size());

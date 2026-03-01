@@ -29,6 +29,15 @@ ActionAbstraction::ActionAbstraction() {
     }
 }
 
+ActionAbstraction::ActionAbstraction(const std::vector<BetSize>& preflop,
+                                     const std::vector<BetSize>& flop,
+                                     const std::vector<BetSize>& turn,
+                                     const std::vector<BetSize>& river)
+    : preflop_bet_sizes_(preflop),
+      flop_bet_sizes_(flop),
+      turn_bet_sizes_(turn),
+      river_bet_sizes_(river) {}
+
 const std::vector<BetSize>& ActionAbstraction::get_bet_sizes(Street street) const {
     switch (street) {
         case Street::PREFLOP:

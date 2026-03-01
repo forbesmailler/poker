@@ -245,8 +245,8 @@ int cmd_solve() {
         }
     }
 
-    if (hero_seat < 0 || opp_seat < 0 || hero_c0 == CARD_NONE || board_cards.size() < 5) {
-        log_error("Incomplete input. Need: hero, opponent, board (5 cards), stacks, actions.");
+    if (hero_seat < 0 || opp_seat < 0 || hero_c0 == CARD_NONE || board_cards.size() < 4) {
+        log_error("Incomplete input. Need: hero, opponent, board (4-5 cards), stacks, actions.");
         return 1;
     }
 
@@ -311,13 +311,14 @@ int cmd_solve() {
         }
     }
 
-    if (state.street() != Street::RIVER) {
-        log_error("State is not on the river. Current street: " +
+    if (state.street() != Street::TURN && state.street() != Street::RIVER) {
+        log_error("State must be on the turn or river for subgame solving. Current street: " +
                   std::to_string(static_cast<int>(state.street())));
         return 1;
     }
 
-    std::cout << "River subgame solving...\n"
+    std::string street_name = (state.street() == Street::TURN) ? "Turn+River" : "River";
+    std::cout << street_name << " subgame solving...\n"
               << "  Hero:     seat " << hero_seat << " [" << card_to_string(hero_c0) << " "
               << card_to_string(hero_c1) << "]\n"
               << "  Opponent: seat " << opp_seat << "\n"
@@ -342,13 +343,24 @@ int cmd_solve() {
             live_combos++;
     std::cout << "Opponent range: " << live_combos << " live combos\n";
 
+    // Build finer action abstraction for subgame solving
+    // More bet sizes than the blueprint for better resolution
+    std::vector<BetSize> subgame_turn_sizes = {{0.25f, false}, {0.5f, false}, {0.75f, false},
+                                               {1.0f, false},  {1.5f, false}, {0.0f, true}};
+    std::vector<BetSize> subgame_river_sizes = {{0.25f, false}, {0.5f, false}, {0.75f, false},
+                                                {1.0f, false},  {1.5f, false}, {0.0f, true}};
+    // Preflop/flop sizes don't matter for turn+river subgame
+    std::vector<BetSize> dummy_sizes = {{0.75f, false}, {0.0f, true}};
+    ActionAbstraction subgame_abs(dummy_sizes, dummy_sizes, subgame_turn_sizes,
+                                  subgame_river_sizes);
+
     // Solve subgame
-    SubgameCFR solver(action_abs, eval);
+    SubgameCFR solver(subgame_abs, eval);
     double ev =
         solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat, num_iterations);
 
     // Get and print strategy
-    auto actions = action_abs.get_actions(state);
+    auto actions = subgame_abs.get_actions(state);
     int num_actions = static_cast<int>(actions.size());
     float strategy[SubgameNodeData::MAX_ACTIONS];
     solver.get_strategy(state, hero_c0, hero_c1, strategy, num_actions);

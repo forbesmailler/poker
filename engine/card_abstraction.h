@@ -4,6 +4,7 @@
 #include "hand_evaluator.h"
 #include "game_state.h"
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <array>
 #include <string>
@@ -43,6 +44,13 @@ class CardAbstraction {
     // [2]=RIVER: hand_rank -> bucket  (size MAX_HAND_RANK+1)
     std::array<std::vector<Bucket>, 3> rank_to_bucket_;
 
+    // Equity-histogram centroids for flop/turn bucket assignment
+    // [0]=FLOP centroids, [1]=TURN centroids
+    // Each centroid is a vector of HISTOGRAM_BINS floats
+    std::array<std::vector<float>, 2> centroids_;
+    int centroid_bins_ = 0;        // Number of bins per histogram (config::HISTOGRAM_BINS)
+    bool use_histograms_ = false;  // True if centroids were built/loaded
+
     // Resolution for avg-percentile discretization (bins per river bucket)
     static constexpr int AVG_RESOLUTION = 100;
 
@@ -57,6 +65,11 @@ class CardAbstraction {
     void build_preflop_abstraction();
     void build_postflop_tables(const HandEvaluator& eval, int num_threads,
                                int64_t max_combos_per_street);
+    void build_histogram_centroids(const HandEvaluator& eval, int num_threads,
+                                   int64_t max_combos_per_street);
+
+    // Find nearest centroid for a histogram, return bucket index
+    Bucket nearest_centroid(const float* hist, int street_idx) const;
 };
 
 }  // namespace poker

@@ -18,7 +18,7 @@ inline SubgameKey make_subgame_key(int player, int combo_idx, uint64_t action_ha
 }
 
 struct SubgameNodeData {
-    static constexpr int MAX_ACTIONS = 6;
+    static constexpr int MAX_ACTIONS = 8;
     float regret[MAX_ACTIONS] = {};
     float strategy_sum[MAX_ACTIONS] = {};
     uint8_t num_actions = 0;
