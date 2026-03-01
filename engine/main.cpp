@@ -319,7 +319,7 @@ int cmd_solve() {
     }
 
     bool depth_limited = (state.street() == Street::FLOP);
-    std::string street_name = depth_limited      ? "Flop (depth-limited)"
+    std::string street_name = depth_limited                      ? "Flop (depth-limited)"
                               : (state.street() == Street::TURN) ? "Turn+River"
                                                                  : "River";
     std::cout << street_name << " subgame solving...\n"
@@ -349,8 +349,8 @@ int cmd_solve() {
 
     // Build finer action abstraction for subgame solving
     // More bet sizes than the blueprint for better resolution
-    std::vector<BetSize> subgame_flop_sizes = {{0.33f, false}, {0.5f, false}, {0.75f, false},
-                                               {1.0f, false},  {0.0f, true}};
+    std::vector<BetSize> subgame_flop_sizes = {
+        {0.33f, false}, {0.5f, false}, {0.75f, false}, {1.0f, false}, {0.0f, true}};
     std::vector<BetSize> subgame_turn_sizes = {{0.25f, false}, {0.5f, false}, {0.75f, false},
                                                {1.0f, false},  {1.5f, false}, {0.0f, true}};
     std::vector<BetSize> subgame_river_sizes = {{0.25f, false}, {0.5f, false}, {0.75f, false},
@@ -360,10 +360,11 @@ int cmd_solve() {
                                   subgame_river_sizes);
 
     // Solve subgame
-    SubgameCFR solver(subgame_abs, eval);
-    double ev =
-        solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat, num_iterations,
-                     depth_limited);
+    // For depth-limited flop solving, pass blueprint + card abstraction for leaf value estimation
+    SubgameCFR solver(subgame_abs, eval, depth_limited ? &blueprint : nullptr,
+                      depth_limited ? &card_abs : nullptr, depth_limited ? &action_abs : nullptr);
+    double ev = solver.solve(state, hero_c0, hero_c1, opp_range, hero_seat, opp_seat,
+                             num_iterations, depth_limited);
 
     // Get and print strategy
     auto actions = subgame_abs.get_actions(state);

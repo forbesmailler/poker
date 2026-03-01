@@ -5,12 +5,18 @@
 
 namespace poker {
 
-SubgameCFR::SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator& eval)
-    : action_abs_(action_abs), eval_(eval) {}
+SubgameCFR::SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator& eval,
+                       const InfoSetStore* blueprint, const CardAbstraction* card_abs,
+                       const ActionAbstraction* blueprint_action_abs)
+    : action_abs_(action_abs),
+      eval_(eval),
+      blueprint_(blueprint),
+      card_abs_(card_abs),
+      blueprint_action_abs_(blueprint_action_abs) {}
 
 double SubgameCFR::solve(const GameState& root, Card hero_c0, Card hero_c1, const Range& opp_range,
-                         int hero_player, int opp_player, int num_iterations,
-                         bool depth_limited, int num_equity_samples) {
+                         int hero_player, int opp_player, int num_iterations, bool depth_limited,
+                         int num_equity_samples) {
     nodes_.clear();
     hero_player_ = hero_player;
     depth_limited_ = depth_limited;
@@ -277,10 +283,7 @@ double SubgameCFR::terminal_value(const GameState& state, Card hero_c0, Card her
 }
 
 double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card hero_c1,
-                                      const Range& opp_reach, int hero_player, int /*opp_player*/) {
-    int pot = state.pot();
-    int hero_invested = state.players()[hero_player].total_invested;
-
+                                      const Range& opp_reach, int hero_player, int opp_player) {
     // Build dead card mask: hero cards + board (3 flop cards)
     CardMask dead = card_bit(hero_c0) | card_bit(hero_c1);
     for (int i = 0; i < state.num_board_cards(); ++i)
@@ -295,59 +298,194 @@ double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card
     }
 
     // Deterministic but iteration-varying seed
-    uint64_t seed = static_cast<uint64_t>(hero_c0) * 53 * 53 +
-                    static_cast<uint64_t>(hero_c1) * 53 +
-                    static_cast<uint64_t>(cfr_iteration_) * 997 +
-                    state.action_history_hash();
+    uint64_t seed = static_cast<uint64_t>(hero_c0) * 53 * 53 + static_cast<uint64_t>(hero_c1) * 53 +
+                    static_cast<uint64_t>(cfr_iteration_) * 997 + state.action_history_hash();
     Rng rng(seed);
 
+    bool use_blueprint =
+        (blueprint_ != nullptr && card_abs_ != nullptr && blueprint_action_abs_ != nullptr);
+
     const auto& board = state.board();
+    int pot = state.pot();
+    int hero_invested = state.players()[hero_player].total_invested;
     double total_ev = 0.0;
 
     for (int s = 0; s < num_equity_samples_; ++s) {
         // Sample turn + river from live cards (without replacement)
         int idx0 = rng.next_int(num_live);
         int idx1 = rng.next_int(num_live - 1);
-        if (idx1 >= idx0) idx1++;
+        if (idx1 >= idx0)
+            idx1++;
 
         Card turn_card = live_cards[idx0];
         Card river_card = live_cards[idx1];
 
         CardMask sample_dead = dead | card_bit(turn_card) | card_bit(river_card);
 
-        // Evaluate hero's 7-card hand
-        HandRank hero_rank = eval_.evaluate(hero_c0, hero_c1, board[0], board[1], board[2],
-                                            turn_card, river_card);
+        if (use_blueprint) {
+            // Blueprint rollout: deal turn+river, simulate game using blueprint strategies
+            GameState turn_state = state.deal_turn(turn_card);
+            GameState river_dealt = turn_state;  // Will deal river at chance node in rollout
 
-        // Sum over all live opponent combos
-        for (int j = 0; j < Range::NUM_COMBOS; ++j) {
-            if (opp_reach.weights[j] == 0.0f)
-                continue;
+            // For each live opponent combo, do a rollout and weight by reach
+            for (int j = 0; j < Range::NUM_COMBOS; ++j) {
+                if (opp_reach.weights[j] == 0.0f)
+                    continue;
 
-            Card oc0, oc1;
-            Range::combo_from_index(j, oc0, oc1);
+                Card oc0, oc1;
+                Range::combo_from_index(j, oc0, oc1);
 
-            // Skip combos conflicting with hero, board, or sampled cards
-            if ((sample_dead & card_bit(oc0)) || (sample_dead & card_bit(oc1)))
-                continue;
+                if ((sample_dead & card_bit(oc0)) || (sample_dead & card_bit(oc1)))
+                    continue;
 
-            HandRank opp_rank = eval_.evaluate(oc0, oc1, board[0], board[1], board[2],
-                                               turn_card, river_card);
-
-            int cmp = HandEvaluator::compare(hero_rank, opp_rank);
-            double payoff;
-            if (cmp > 0) {
-                payoff = static_cast<double>(pot - hero_invested);
-            } else if (cmp < 0) {
-                payoff = -static_cast<double>(hero_invested);
-            } else {
-                payoff = static_cast<double>(pot) / 2.0 - static_cast<double>(hero_invested);
+                // Create a per-combo RNG so rollouts are independent
+                Rng combo_rng(seed + static_cast<uint64_t>(s) * 1327 + static_cast<uint64_t>(j));
+                double payoff = blueprint_rollout(turn_state, hero_c0, hero_c1, oc0, oc1,
+                                                  hero_player, opp_player, combo_rng);
+                total_ev += opp_reach.weights[j] * payoff;
             }
-            total_ev += opp_reach.weights[j] * payoff;
+        } else {
+            // Raw equity fallback: compare hand ranks at showdown
+            HandRank hero_rank = eval_.evaluate(hero_c0, hero_c1, board[0], board[1], board[2],
+                                                turn_card, river_card);
+
+            for (int j = 0; j < Range::NUM_COMBOS; ++j) {
+                if (opp_reach.weights[j] == 0.0f)
+                    continue;
+
+                Card oc0, oc1;
+                Range::combo_from_index(j, oc0, oc1);
+
+                if ((sample_dead & card_bit(oc0)) || (sample_dead & card_bit(oc1)))
+                    continue;
+
+                HandRank opp_rank =
+                    eval_.evaluate(oc0, oc1, board[0], board[1], board[2], turn_card, river_card);
+
+                int cmp = HandEvaluator::compare(hero_rank, opp_rank);
+                double payoff;
+                if (cmp > 0) {
+                    payoff = static_cast<double>(pot - hero_invested);
+                } else if (cmp < 0) {
+                    payoff = -static_cast<double>(hero_invested);
+                } else {
+                    payoff = static_cast<double>(pot) / 2.0 - static_cast<double>(hero_invested);
+                }
+                total_ev += opp_reach.weights[j] * payoff;
+            }
         }
     }
 
     return total_ev / num_equity_samples_;
+}
+
+double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card hero_c1,
+                                     Card opp_c0, Card opp_c1, int hero_player, int opp_player,
+                                     Rng& rng) {
+    GameState s = state;
+
+    // Simulate game using blueprint strategies until terminal
+    // Max depth guard to prevent infinite loops
+    for (int depth = 0; depth < 20; ++depth) {
+        if (s.is_terminal()) {
+            int pot = s.pot();
+            int hero_invested = s.players()[hero_player].total_invested;
+
+            bool hero_folded = s.players()[hero_player].status == PlayerStatus::FOLDED;
+            bool opp_folded = s.players()[opp_player].status == PlayerStatus::FOLDED;
+
+            if (hero_folded)
+                return -static_cast<double>(hero_invested);
+            if (opp_folded)
+                return static_cast<double>(pot - hero_invested);
+
+            // Showdown
+            const auto& board = s.board();
+            HandRank hero_rank =
+                eval_.evaluate(hero_c0, hero_c1, board[0], board[1], board[2], board[3], board[4]);
+            HandRank opp_rank =
+                eval_.evaluate(opp_c0, opp_c1, board[0], board[1], board[2], board[3], board[4]);
+
+            int cmp = HandEvaluator::compare(hero_rank, opp_rank);
+            if (cmp > 0)
+                return static_cast<double>(pot - hero_invested);
+            if (cmp < 0)
+                return -static_cast<double>(hero_invested);
+            return static_cast<double>(pot) / 2.0 - static_cast<double>(hero_invested);
+        }
+
+        if (s.is_chance_node()) {
+            // Deal next card — use a random card that doesn't conflict
+            CardMask chance_dead =
+                card_bit(hero_c0) | card_bit(hero_c1) | card_bit(opp_c0) | card_bit(opp_c1);
+            for (int i = 0; i < s.num_board_cards(); ++i)
+                chance_dead |= card_bit(s.board()[i]);
+
+            Card live[NUM_CARDS];
+            int n_live = 0;
+            for (int c = 0; c < NUM_CARDS; ++c) {
+                if (!(chance_dead & card_bit(static_cast<Card>(c))))
+                    live[n_live++] = static_cast<Card>(c);
+            }
+            if (n_live == 0)
+                return 0.0;
+
+            Card dealt = live[rng.next_int(n_live)];
+            if (s.num_board_cards() < 4)
+                s = s.deal_turn(dealt);
+            else
+                s = s.deal_river(dealt);
+            continue;
+        }
+
+        // Decision node — look up blueprint strategy by bucket
+        int acting = s.current_player();
+        Card c0, c1;
+        if (acting == hero_player) {
+            c0 = hero_c0;
+            c1 = hero_c1;
+        } else {
+            c0 = opp_c0;
+            c1 = opp_c1;
+        }
+
+        uint16_t bucket =
+            card_abs_->get_bucket(s.street(), c0, c1, s.board().data(), s.num_board_cards());
+        InfoSetKey key =
+            make_infoset_key(acting, static_cast<int>(s.street()), bucket, s.action_history_hash());
+
+        // Get blueprint actions (must use the same action abstraction as training)
+        auto actions = blueprint_action_abs_->get_actions(s);
+        int num_actions = static_cast<int>(actions.size());
+        if (num_actions == 0)
+            return 0.0;
+
+        // Look up blueprint strategy
+        float strategy[InfoSetData::MAX_ACTIONS];
+        const InfoSetData* data = blueprint_->find(key);
+        if (data && data->num_actions > 0) {
+            data->average_strategy(strategy);
+            // Clamp to actual number of actions available
+            if (data->num_actions != num_actions) {
+                int n = std::min(static_cast<int>(data->num_actions), num_actions);
+                float uniform = 1.0f / num_actions;
+                for (int a = 0; a < num_actions; ++a)
+                    strategy[a] = (a < n) ? strategy[a] : uniform;
+            }
+        } else {
+            // Blueprint miss — use uniform
+            float uniform = 1.0f / num_actions;
+            for (int a = 0; a < num_actions; ++a)
+                strategy[a] = uniform;
+        }
+
+        // Sample action from strategy
+        int chosen = rng.sample_action(strategy, num_actions);
+        s = s.apply_action(actions[chosen]);
+    }
+
+    // Depth guard reached — shouldn't happen in normal play
+    return 0.0;
 }
 
 }  // namespace poker

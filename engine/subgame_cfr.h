@@ -1,8 +1,10 @@
 #pragma once
 
 #include "action_abstraction.h"
+#include "card_abstraction.h"
 #include "game_state.h"
 #include "hand_evaluator.h"
+#include "information_set.h"
 #include "range_manager.h"
 #include "rng.h"
 #include <unordered_map>
@@ -62,7 +64,9 @@ struct SubgameNodeData {
 
 class SubgameCFR {
    public:
-    SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator& eval);
+    SubgameCFR(const ActionAbstraction& action_abs, const HandEvaluator& eval,
+               const InfoSetStore* blueprint = nullptr, const CardAbstraction* card_abs = nullptr,
+               const ActionAbstraction* blueprint_action_abs = nullptr);
 
     // Solve subgame. Returns hero EV.
     // If depth_limited=true, solves only the current betting round and estimates
@@ -78,6 +82,9 @@ class SubgameCFR {
    private:
     const ActionAbstraction& action_abs_;
     const HandEvaluator& eval_;
+    const InfoSetStore* blueprint_ = nullptr;
+    const CardAbstraction* card_abs_ = nullptr;
+    const ActionAbstraction* blueprint_action_abs_ = nullptr;
     std::unordered_map<SubgameKey, SubgameNodeData> nodes_;
     int hero_player_ = 0;  // Set by solve()
     bool depth_limited_ = false;
@@ -93,10 +100,15 @@ class SubgameCFR {
     double terminal_value(const GameState& state, Card hero_c0, Card hero_c1,
                           const Range& opp_reach, int hero_player, int opp_player) const;
 
-    // Estimate EV at a turn chance node via Monte Carlo equity sampling
-    // Used in depth-limited solving to avoid expanding the turn+river tree
+    // Estimate EV at a turn chance node via Monte Carlo sampling.
+    // Uses blueprint rollouts when blueprint is available, otherwise raw equity.
     double estimate_equity_ev(const GameState& state, Card hero_c0, Card hero_c1,
                               const Range& opp_reach, int hero_player, int opp_player);
+
+    // Monte Carlo rollout using blueprint strategies from a given (turn, river) state.
+    // Returns payoff for hero for a single (hero, opponent) matchup.
+    double blueprint_rollout(const GameState& state, Card hero_c0, Card hero_c1, Card opp_c0,
+                             Card opp_c1, int hero_player, int opp_player, Rng& rng);
 };
 
 }  // namespace poker
