@@ -310,6 +310,14 @@ double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card
     int hero_invested = state.players()[hero_player].total_invested;
     double total_ev = 0.0;
 
+    // Cache: turn buckets per turn card (avoid recomputing for repeated turn cards)
+    // turn_bucket_cache[card][combo] — lazily populated
+    // Using flat array: [NUM_CARDS * NUM_COMBOS], 0xFFFF = not computed
+    std::vector<uint16_t> turn_bucket_cache;
+    if (use_blueprint) {
+        turn_bucket_cache.assign(static_cast<size_t>(NUM_CARDS) * Range::NUM_COMBOS, 0xFFFF);
+    }
+
     for (int s = 0; s < num_equity_samples_; ++s) {
         // Sample turn + river from live cards (without replacement)
         int idx0 = rng.next_int(num_live);
@@ -323,11 +331,24 @@ double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card
         CardMask sample_dead = dead | card_bit(turn_card) | card_bit(river_card);
 
         if (use_blueprint) {
-            // Blueprint rollout: deal turn+river, simulate game using blueprint strategies
             GameState turn_state = state.deal_turn(turn_card);
-            GameState river_dealt = turn_state;  // Will deal river at chance node in rollout
 
-            // For each live opponent combo, do a rollout and weight by reach
+            Card turn_board[4] = {board[0], board[1], board[2], turn_card};
+            Card river_board[5] = {board[0], board[1], board[2], turn_card, river_card};
+
+            // Lazily compute hero turn bucket (cached per turn card)
+            int hero_combo = Range::combo_index(hero_c0, hero_c1);
+            size_t hero_turn_idx = static_cast<size_t>(turn_card) * Range::NUM_COMBOS + hero_combo;
+            if (turn_bucket_cache[hero_turn_idx] == 0xFFFF) {
+                turn_bucket_cache[hero_turn_idx] =
+                    card_abs_->get_bucket(Street::TURN, hero_c0, hero_c1, turn_board, 4);
+            }
+            uint16_t hero_turn_bucket = turn_bucket_cache[hero_turn_idx];
+
+            // River buckets are cheap (hand rank table lookup), compute directly
+            uint16_t hero_river_bucket =
+                card_abs_->get_bucket(Street::RIVER, hero_c0, hero_c1, river_board, 5);
+
             for (int j = 0; j < Range::NUM_COMBOS; ++j) {
                 if (opp_reach.weights[j] == 0.0f)
                     continue;
@@ -338,10 +359,23 @@ double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card
                 if ((sample_dead & card_bit(oc0)) || (sample_dead & card_bit(oc1)))
                     continue;
 
-                // Create a per-combo RNG so rollouts are independent
+                // Lazily compute opponent turn bucket (cached per turn card)
+                size_t opp_turn_idx = static_cast<size_t>(turn_card) * Range::NUM_COMBOS + j;
+                if (turn_bucket_cache[opp_turn_idx] == 0xFFFF) {
+                    turn_bucket_cache[opp_turn_idx] =
+                        card_abs_->get_bucket(Street::TURN, oc0, oc1, turn_board, 4);
+                }
+                uint16_t opp_turn_bucket = turn_bucket_cache[opp_turn_idx];
+
+                uint16_t opp_river_bucket =
+                    card_abs_->get_bucket(Street::RIVER, oc0, oc1, river_board, 5);
+
+                uint16_t buckets[4] = {hero_turn_bucket, hero_river_bucket, opp_turn_bucket,
+                                       opp_river_bucket};
+
                 Rng combo_rng(seed + static_cast<uint64_t>(s) * 1327 + static_cast<uint64_t>(j));
                 double payoff = blueprint_rollout(turn_state, hero_c0, hero_c1, oc0, oc1,
-                                                  hero_player, opp_player, combo_rng);
+                                                  hero_player, opp_player, buckets, combo_rng);
                 total_ev += opp_reach.weights[j] * payoff;
             }
         } else {
@@ -381,11 +415,12 @@ double SubgameCFR::estimate_equity_ev(const GameState& state, Card hero_c0, Card
 
 double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card hero_c1,
                                      Card opp_c0, Card opp_c1, int hero_player, int opp_player,
-                                     Rng& rng) {
+                                     const uint16_t buckets[4], Rng& rng) {
+    // buckets: [0]=hero_turn, [1]=hero_river, [2]=opp_turn, [3]=opp_river
+    // All precomputed by caller — no get_bucket() calls in this function.
     GameState s = state;
 
     // Simulate game using blueprint strategies until terminal
-    // Max depth guard to prevent infinite loops
     for (int depth = 0; depth < 20; ++depth) {
         if (s.is_terminal()) {
             int pot = s.pot();
@@ -400,11 +435,11 @@ double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card 
                 return static_cast<double>(pot - hero_invested);
 
             // Showdown
-            const auto& board = s.board();
+            const auto& brd = s.board();
             HandRank hero_rank =
-                eval_.evaluate(hero_c0, hero_c1, board[0], board[1], board[2], board[3], board[4]);
+                eval_.evaluate(hero_c0, hero_c1, brd[0], brd[1], brd[2], brd[3], brd[4]);
             HandRank opp_rank =
-                eval_.evaluate(opp_c0, opp_c1, board[0], board[1], board[2], board[3], board[4]);
+                eval_.evaluate(opp_c0, opp_c1, brd[0], brd[1], brd[2], brd[3], brd[4]);
 
             int cmp = HandEvaluator::compare(hero_rank, opp_rank);
             if (cmp > 0)
@@ -415,7 +450,7 @@ double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card 
         }
 
         if (s.is_chance_node()) {
-            // Deal next card — use a random card that doesn't conflict
+            // Deal the river card — sample a random non-conflicting card
             CardMask chance_dead =
                 card_bit(hero_c0) | card_bit(hero_c1) | card_bit(opp_c0) | card_bit(opp_c1);
             for (int i = 0; i < s.num_board_cards(); ++i)
@@ -438,34 +473,29 @@ double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card 
             continue;
         }
 
-        // Decision node — look up blueprint strategy by bucket
+        // Decision node — look up blueprint strategy using precomputed bucket
         int acting = s.current_player();
-        Card c0, c1;
-        if (acting == hero_player) {
-            c0 = hero_c0;
-            c1 = hero_c1;
-        } else {
-            c0 = opp_c0;
-            c1 = opp_c1;
-        }
+        bool is_hero = (acting == hero_player);
+        int street_int = static_cast<int>(s.street());
 
-        uint16_t bucket =
-            card_abs_->get_bucket(s.street(), c0, c1, s.board().data(), s.num_board_cards());
-        InfoSetKey key =
-            make_infoset_key(acting, static_cast<int>(s.street()), bucket, s.action_history_hash());
+        // Select precomputed bucket: turn=index 0/2, river=index 1/3
+        uint16_t bucket;
+        if (s.street() == Street::TURN)
+            bucket = is_hero ? buckets[0] : buckets[2];
+        else
+            bucket = is_hero ? buckets[1] : buckets[3];
 
-        // Get blueprint actions (must use the same action abstraction as training)
+        InfoSetKey key = make_infoset_key(acting, street_int, bucket, s.action_history_hash());
+
         auto actions = blueprint_action_abs_->get_actions(s);
         int num_actions = static_cast<int>(actions.size());
         if (num_actions == 0)
             return 0.0;
 
-        // Look up blueprint strategy
         float strategy[InfoSetData::MAX_ACTIONS];
         const InfoSetData* data = blueprint_->find(key);
         if (data && data->num_actions > 0) {
             data->average_strategy(strategy);
-            // Clamp to actual number of actions available
             if (data->num_actions != num_actions) {
                 int n = std::min(static_cast<int>(data->num_actions), num_actions);
                 float uniform = 1.0f / num_actions;
@@ -473,18 +503,15 @@ double SubgameCFR::blueprint_rollout(const GameState& state, Card hero_c0, Card 
                     strategy[a] = (a < n) ? strategy[a] : uniform;
             }
         } else {
-            // Blueprint miss — use uniform
             float uniform = 1.0f / num_actions;
             for (int a = 0; a < num_actions; ++a)
                 strategy[a] = uniform;
         }
 
-        // Sample action from strategy
         int chosen = rng.sample_action(strategy, num_actions);
         s = s.apply_action(actions[chosen]);
     }
 
-    // Depth guard reached — shouldn't happen in normal play
     return 0.0;
 }
 

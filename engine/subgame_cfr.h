@@ -105,10 +105,14 @@ class SubgameCFR {
     double estimate_equity_ev(const GameState& state, Card hero_c0, Card hero_c1,
                               const Range& opp_reach, int hero_player, int opp_player);
 
-    // Monte Carlo rollout using blueprint strategies from a given (turn, river) state.
+    // Monte Carlo rollout using blueprint strategies from a given state.
+    // Uses precomputed buckets (turn_bucket, river_bucket per player) to avoid
+    // expensive get_bucket() calls inside the rollout loop.
     // Returns payoff for hero for a single (hero, opponent) matchup.
+    // buckets[0] = hero_turn, [1] = hero_river, [2] = opp_turn, [3] = opp_river
     double blueprint_rollout(const GameState& state, Card hero_c0, Card hero_c1, Card opp_c0,
-                             Card opp_c1, int hero_player, int opp_player, Rng& rng);
+                             Card opp_c1, int hero_player, int opp_player,
+                             const uint16_t buckets[4], Rng& rng);
 };
 
 }  // namespace poker
