@@ -38,13 +38,16 @@ class CardAbstraction {
     std::vector<Bucket> preflop_buckets_;  // size 169
 
     // Post-flop bucket tables:
-    // [0]=FLOP: hand_rank -> bucket  (size MAX_HAND_RANK+1)
-    // [1]=TURN: discretized avg river percentile -> bucket  (size varies)
+    // [0]=FLOP: discretized avg river percentile -> bucket (sampled rollout)
+    // [1]=TURN: discretized avg river percentile -> bucket (full rollout)
     // [2]=RIVER: hand_rank -> bucket  (size MAX_HAND_RANK+1)
     std::array<std::vector<Bucket>, 3> rank_to_bucket_;
 
-    // Resolution for turn avg-percentile discretization (bins per river bucket)
-    static constexpr int TURN_AVG_RESOLUTION = 100;
+    // Resolution for avg-percentile discretization (bins per river bucket)
+    static constexpr int AVG_RESOLUTION = 100;
+
+    // Number of random turn+river completions sampled per flop hand
+    static constexpr int FLOP_ROLLOUT_SAMPLES = 50;
 
     bool built_ = false;
 

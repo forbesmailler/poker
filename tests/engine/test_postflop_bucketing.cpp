@@ -132,6 +132,31 @@ TEST(PostflopBucketing, BuildSaveLoadRoundTrip) {
     std::remove(path.c_str());
 }
 
+TEST(PostflopBucketing, FlopRolloutCapturesDraws) {
+    auto& abs = get_built_abstraction();
+
+    // Board: Ah 5h 9h  (three hearts = flush draw board)
+    Card board[3] = {
+        make_card(12, 2),  // Ah
+        make_card(3, 2),   // 5h
+        make_card(7, 2),   // 9h
+    };
+
+    // Kh Qh — flush draw (two more hearts, will hit flush often)
+    auto flush_draw = abs.get_bucket(Street::FLOP,
+                                      make_card(11, 2),  // Kh
+                                      make_card(10, 2),  // Qh
+                                      board, 3);
+
+    // 2c 3d — no draw, no pair, weak
+    auto weak = abs.get_bucket(Street::FLOP,
+                                make_card(0, 0),   // 2c
+                                make_card(1, 1),   // 3d
+                                board, 3);
+
+    EXPECT_GT(flush_draw, weak);
+}
+
 TEST(PostflopBucketing, TurnRolloutCapturesDraws) {
     auto& abs = get_built_abstraction();
 
