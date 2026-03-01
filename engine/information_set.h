@@ -15,7 +15,7 @@ inline InfoSetKey make_infoset_key(int player, int street, uint16_t card_bucket,
 }
 
 struct InfoSetData {
-    static constexpr int MAX_ACTIONS = 10;
+    static constexpr int MAX_ACTIONS = 6;
 
     float cumulative_regret[MAX_ACTIONS] = {};
     float strategy_sum[MAX_ACTIONS] = {};

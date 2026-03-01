@@ -3,6 +3,7 @@
 #include "equity_calculator.h"
 #include "action_abstraction.h"
 #include "hand_evaluator.h"
+#include "generated_config.h"
 
 using namespace poker;
 
@@ -51,10 +52,10 @@ TEST(CardAbstraction, DifferentHandsDifferentBuckets) {
 
 TEST(CardAbstraction, NumBuckets) {
     CardAbstraction abs;
-    EXPECT_EQ(abs.num_buckets(Street::PREFLOP), 169);
-    EXPECT_EQ(abs.num_buckets(Street::FLOP), 200);
-    EXPECT_EQ(abs.num_buckets(Street::TURN), 200);
-    EXPECT_EQ(abs.num_buckets(Street::RIVER), 200);
+    EXPECT_EQ(abs.num_buckets(Street::PREFLOP), config::PREFLOP_BUCKETS);
+    EXPECT_EQ(abs.num_buckets(Street::FLOP), config::FLOP_BUCKETS);
+    EXPECT_EQ(abs.num_buckets(Street::TURN), config::TURN_BUCKETS);
+    EXPECT_EQ(abs.num_buckets(Street::RIVER), config::RIVER_BUCKETS);
 }
 
 TEST(EMD, IdenticalHistograms) {
