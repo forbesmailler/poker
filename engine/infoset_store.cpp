@@ -1,7 +1,9 @@
 #include "infoset_store.h"
 #include "utils.h"
+#include <atomic>
 #include <chrono>
 #include <fstream>
+#include <thread>
 
 namespace poker {
 
@@ -192,56 +194,109 @@ void InfoSetStore::load(const std::string& path) {
     memcpy(&total_entries, ptr, sizeof(total_entries));
     ptr += sizeof(total_entries);
 
-    fprintf(stdout, "  Inserting %llu info sets into hash map...\n",
-            static_cast<unsigned long long>(total_entries));
+    fprintf(stdout, "  %llu info sets to load\n", static_cast<unsigned long long>(total_entries));
     fflush(stdout);
 
     reserve(total_entries);
 
-    auto start = std::chrono::high_resolution_clock::now();
-    int last_pct = -1;
+    // Pass 1: scan buffer to build per-shard offset lists (4 bytes each instead of 24)
+    fprintf(stdout, "  Indexing entries by shard...\n");
+    fflush(stdout);
 
-    for (uint64_t i = 0; i < total_entries; ++i) {
-        InfoSetKey key;
-        memcpy(&key, ptr, sizeof(key));
-        ptr += sizeof(key);
+    // Store just the byte offset from start of entries data — much smaller than EntryRef
+    const uint8_t* entries_start = ptr;
+    std::vector<std::vector<uint32_t>> shard_indices(num_shards_);
+    {
+        size_t approx_per_shard = static_cast<size_t>(total_entries / num_shards_ * 1.1);
+        for (auto& v : shard_indices)
+            v.reserve(approx_per_shard);
 
-        uint8_t num_actions = *ptr++;
-        int clamped = std::min(static_cast<int>(num_actions), InfoSetData::MAX_ACTIONS);
-
-        // Direct insert without locks (single-threaded bulk load)
-        int shard_idx = shard_index(key);
-        auto& data = shards_[shard_idx].insert_no_lock(key, clamped);
-
-        size_t floats_size = sizeof(float) * num_actions;
-
-        // Regrets
-        memcpy(data.cumulative_regret, ptr, sizeof(float) * clamped);
-        ptr += floats_size;
-
-        // Strategy sums
-        memcpy(data.strategy_sum, ptr, sizeof(float) * clamped);
-        ptr += floats_size;
-
-        // Progress every 1%
-        int pct = static_cast<int>((i + 1) * 100 / total_entries);
-        if (pct != last_pct) {
-            last_pct = pct;
-            auto now = std::chrono::high_resolution_clock::now();
-            double elapsed = std::chrono::duration<double>(now - start).count();
-
-            fprintf(stdout, "  [%d%%] %llu/%llu", pct, static_cast<unsigned long long>(i + 1),
-                    static_cast<unsigned long long>(total_entries));
-            if (pct > 0 && pct < 100) {
-                int eta = static_cast<int>(elapsed / pct * (100 - pct));
-                fprintf(stdout, "  (ETA: %ds)", eta);
-            } else if (pct == 100) {
-                fprintf(stdout, "  (%ds)", static_cast<int>(elapsed));
-            }
-            fprintf(stdout, "\n");
-            fflush(stdout);
-        }
+        // We need a global entry index to find the entry in the buffer later
+        // Store per-shard lists of entry indices
+        // Also build a compact offset table to find each entry in the buffer
+        // Since entries are variable-size, we need offsets
     }
+
+    // Build offset table: entry index -> byte offset from entries_start
+    // Use uint32_t offsets for entries < 4GB? No, 9GB file. Use a flat scan approach instead.
+    // Approach: scan once to get per-shard entry pointers (just the raw pointer, 8 bytes each)
+    std::vector<std::vector<const uint8_t*>> shard_ptrs(num_shards_);
+    {
+        size_t approx_per_shard = static_cast<size_t>(total_entries / num_shards_ * 1.1);
+        for (auto& v : shard_ptrs)
+            v.reserve(approx_per_shard);
+
+        auto scan_start = std::chrono::high_resolution_clock::now();
+        for (uint64_t i = 0; i < total_entries; ++i) {
+            const uint8_t* entry_ptr = ptr;
+
+            InfoSetKey key;
+            memcpy(&key, ptr, sizeof(key));
+            ptr += sizeof(key);
+
+            uint8_t num_actions = *ptr++;
+            ptr += sizeof(float) * num_actions * 2;
+
+            int shard_idx = shard_index(key);
+            shard_ptrs[shard_idx].push_back(entry_ptr);
+        }
+        auto scan_end = std::chrono::high_resolution_clock::now();
+        fprintf(stdout, "  Indexed in %.1fs\n",
+                std::chrono::duration<double>(scan_end - scan_start).count());
+        fflush(stdout);
+    }
+
+    // Insert per shard in parallel — each thread owns distinct shards, no locking needed
+    int num_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+    fprintf(stdout, "  Inserting into hash map (%d threads)...\n", num_threads);
+    fflush(stdout);
+
+    auto insert_start = std::chrono::high_resolution_clock::now();
+    std::atomic<int> shards_done{0};
+
+    auto worker = [&](int thread_id) {
+        for (int s = thread_id; s < num_shards_; s += num_threads) {
+            auto& shard = shards_[s];
+            for (const uint8_t* entry_ptr : shard_ptrs[s]) {
+                const uint8_t* p = entry_ptr;
+
+                InfoSetKey key;
+                memcpy(&key, p, sizeof(key));
+                p += sizeof(key);
+
+                uint8_t num_actions = *p++;
+                int clamped = std::min(static_cast<int>(num_actions), InfoSetData::MAX_ACTIONS);
+
+                auto& data = shard.insert_no_lock(key, clamped);
+                memcpy(data.cumulative_regret, p, sizeof(float) * clamped);
+                p += sizeof(float) * num_actions;
+                memcpy(data.strategy_sum, p, sizeof(float) * clamped);
+            }
+            // Free this shard's pointer list immediately to reduce peak memory
+            std::vector<const uint8_t*>().swap(shard_ptrs[s]);
+
+            int done = shards_done.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (done % (num_shards_ / 10 + 1) == 0 || done == num_shards_) {
+                int pct = done * 100 / num_shards_;
+                fprintf(stdout, "  [%d%%] %d/%d shards\n", pct, done, num_shards_);
+                fflush(stdout);
+            }
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < num_threads; ++t)
+        threads.emplace_back(worker, t);
+    for (auto& t : threads)
+        t.join();
+
+    // Free file buffer now that all data is in the hash map
+    std::vector<uint8_t>().swap(file_data);
+
+    auto insert_end = std::chrono::high_resolution_clock::now();
+    fprintf(stdout, "  Inserted in %.1fs\n",
+            std::chrono::duration<double>(insert_end - insert_start).count());
+    fflush(stdout);
 
     log_info("Loaded " + std::to_string(total_entries) + " info sets from " + path);
 }
