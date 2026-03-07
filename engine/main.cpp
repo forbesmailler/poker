@@ -7,6 +7,7 @@
 #include "hand_evaluator.h"
 #include "range_manager.h"
 #include "subgame_cfr.h"
+#include "interactive_trainer.h"
 #include "utils.h"
 
 #include <iostream>
@@ -23,6 +24,7 @@ void print_usage() {
               << "  train               Run MCCFR training\n"
               << "  query               Interactive strategy query\n"
               << "  solve               Subgame solving (flop/turn/river, reads from stdin)\n"
+              << "  play                Interactive GTO trainer\n"
               << "  info                Show training stats / memory usage\n";
 }
 
@@ -397,6 +399,51 @@ int cmd_solve() {
     return 0;
 }
 
+int cmd_play() {
+    std::string checkpoint_dir = config::CHECKPOINT_DIR;
+    if (!std::filesystem::exists(checkpoint_dir)) {
+        log_error("No checkpoint directory found. Run 'train' first.");
+        return 1;
+    }
+
+    std::string latest = find_latest_checkpoint(checkpoint_dir);
+    if (latest.empty()) {
+        log_error("No strategy checkpoints found. Run 'train' first.");
+        return 1;
+    }
+
+    // Force flush so loading messages appear immediately
+    std::cout << std::unitbuf;
+
+    log_info("Loading blueprint from " + latest + " (this may take a minute for large files)...");
+    std::cout.flush();
+
+    InfoSetStore blueprint;
+    blueprint.load(latest);
+    log_info("Loaded " + std::to_string(blueprint.size()) + " info sets (" +
+             std::to_string(blueprint.memory_bytes() / (1024 * 1024)) + " MB)");
+
+    CardAbstraction card_abs;
+    std::string abs_path = std::string(config::CHECKPOINT_DIR) + "/abstraction.bin";
+    if (std::filesystem::exists(abs_path)) {
+        log_info("Loading card abstraction...");
+        card_abs.load(abs_path);
+    } else {
+        log_info("No abstraction.bin found, building now (one-time, may take several minutes)...");
+        card_abs.build(config::NUM_THREADS);
+        std::filesystem::create_directories(config::CHECKPOINT_DIR);
+        card_abs.save(abs_path);
+        log_info("Saved abstraction to " + abs_path);
+    }
+
+    ActionAbstraction action_abs;
+
+    InteractiveTrainer trainer(blueprint, card_abs, action_abs);
+    trainer.run();
+
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -415,6 +462,8 @@ int main(int argc, char* argv[]) {
         return cmd_query();
     if (command == "solve")
         return cmd_solve();
+    if (command == "play")
+        return cmd_play();
 
     std::cerr << "Unknown command: " << command << "\n";
     print_usage();

@@ -1,5 +1,6 @@
 #include "infoset_store.h"
 #include "utils.h"
+#include <chrono>
 #include <fstream>
 
 namespace poker {
@@ -154,41 +155,91 @@ void InfoSetStore::save(const std::string& path) const {
 }
 
 void InfoSetStore::load(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) {
+    // Read entire file into memory for fast parsing (avoids millions of tiny reads)
+    FILE* fp = fopen(path.c_str(), "rb");
+    if (!fp) {
         log_error("Failed to open file for reading: " + path);
         return;
     }
 
+    fseek(fp, 0, SEEK_END);
+    long long file_size = _ftelli64(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    fprintf(stdout, "  Reading %.1f GB into memory...\n", file_size / (1024.0 * 1024.0 * 1024.0));
+    fflush(stdout);
+
+    std::vector<uint8_t> file_data(static_cast<size_t>(file_size));
+    size_t bytes_read = fread(file_data.data(), 1, static_cast<size_t>(file_size), fp);
+    fclose(fp);
+
+    if (bytes_read != static_cast<size_t>(file_size)) {
+        log_error("Failed to read entire file (got " + std::to_string(bytes_read) + " of " +
+                  std::to_string(file_size) + " bytes)");
+        return;
+    }
+
+    fprintf(stdout, "  File loaded into memory.\n");
+    fflush(stdout);
+
     clear();
 
-    uint64_t total_entries;
-    read_binary(in, total_entries);
+    // Parse from memory buffer
+    const uint8_t* ptr = file_data.data();
+    const uint8_t* end = ptr + file_size;
 
-    // Pre-allocate for efficiency
+    uint64_t total_entries;
+    memcpy(&total_entries, ptr, sizeof(total_entries));
+    ptr += sizeof(total_entries);
+
+    fprintf(stdout, "  Inserting %llu info sets into hash map...\n",
+            static_cast<unsigned long long>(total_entries));
+    fflush(stdout);
+
     reserve(total_entries);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    int last_pct = -1;
 
     for (uint64_t i = 0; i < total_entries; ++i) {
         InfoSetKey key;
-        uint8_t num_actions;
-        read_binary(in, key);
-        read_binary(in, num_actions);
+        memcpy(&key, ptr, sizeof(key));
+        ptr += sizeof(key);
 
-        // Clamp to MAX_ACTIONS for safety
+        uint8_t num_actions = *ptr++;
         int clamped = std::min(static_cast<int>(num_actions), InfoSetData::MAX_ACTIONS);
 
-        auto& data = get_or_create(key, clamped);
-        for (int a = 0; a < num_actions; ++a) {
-            float val;
-            read_binary(in, val);
-            if (a < clamped)
-                data.cumulative_regret[a] = val;
-        }
-        for (int a = 0; a < num_actions; ++a) {
-            float val;
-            read_binary(in, val);
-            if (a < clamped)
-                data.strategy_sum[a] = val;
+        // Direct insert without locks (single-threaded bulk load)
+        int shard_idx = shard_index(key);
+        auto& data = shards_[shard_idx].insert_no_lock(key, clamped);
+
+        size_t floats_size = sizeof(float) * num_actions;
+
+        // Regrets
+        memcpy(data.cumulative_regret, ptr, sizeof(float) * clamped);
+        ptr += floats_size;
+
+        // Strategy sums
+        memcpy(data.strategy_sum, ptr, sizeof(float) * clamped);
+        ptr += floats_size;
+
+        // Progress every 1%
+        int pct = static_cast<int>((i + 1) * 100 / total_entries);
+        if (pct != last_pct) {
+            last_pct = pct;
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(now - start).count();
+
+            fprintf(stdout, "  [%d%%] %llu/%llu", pct, static_cast<unsigned long long>(i + 1),
+                    static_cast<unsigned long long>(total_entries));
+            if (pct > 0 && pct < 100) {
+                int eta = static_cast<int>(elapsed / pct * (100 - pct));
+                fprintf(stdout, "  (ETA: %ds)", eta);
+            } else if (pct == 100) {
+                fprintf(stdout, "  (%ds)", static_cast<int>(elapsed));
+            }
+            fprintf(stdout, "\n");
+            fflush(stdout);
         }
     }
 

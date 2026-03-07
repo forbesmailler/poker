@@ -67,6 +67,24 @@ class InfoSetStore {
         }
 
         void grow_table();
+
+        // Fast insert without locking (for single-threaded bulk load)
+        InfoSetData& insert_no_lock(InfoSetKey key, int num_actions) {
+            // Grow if needed
+            if (count >= static_cast<size_t>(table.size() * MAX_LOAD_FACTOR)) {
+                grow_table();
+            }
+            size_t slot = static_cast<size_t>(key) & table_mask;
+            while (table[slot] != EMPTY_SLOT) {
+                slot = (slot + 1) & table_mask;
+            }
+            uint32_t new_idx = alloc_entry();
+            auto& entry = entry_at(new_idx);
+            entry.key = key;
+            entry.data = InfoSetData(num_actions);
+            table[slot] = new_idx;
+            return entry.data;
+        }
     };
 
     std::vector<Shard> shards_;

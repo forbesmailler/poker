@@ -38,6 +38,8 @@ set(ENGINE_SOURCES
     action_abstraction.cpp
     range_manager.cpp
     subgame_cfr.cpp
+    interactive_trainer.cpp
+    win_console.cpp
     utils.cpp
 )
 

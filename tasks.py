@@ -90,6 +90,27 @@ def train(c, config="Release"):
     subprocess.run([exe, "train"], check=True)
 
 
+@task(pre=[format])
+def play(c, config="Release"):
+    """Format, build, then launch interactive GTO trainer."""
+    gen_config(c)
+    build(c, config=config)
+    test_cpp(c, config=config)
+
+    exe = os.path.abspath(os.path.join("engine", "build", config, "poker_solver.exe"))
+
+    # Build abstraction if missing
+    abs_path = os.path.join("checkpoints", "abstraction.bin")
+    if not os.path.isfile(abs_path):
+        print("Building card abstraction (required for trainer)...")
+        import subprocess
+
+        subprocess.run([exe, "build-abstraction"], check=True)
+
+    print("\nLaunching GTO trainer...")
+    os.system(f'"{exe}" play')
+
+
 @task(pre=[format, test_py])
 def all(c):
     """Format and test Python."""
