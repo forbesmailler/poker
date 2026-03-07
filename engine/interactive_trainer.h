@@ -48,6 +48,10 @@ class InteractiveTrainer {
     std::string action_to_string(const Action& action, const GameState& state) const;
     std::string hand_category_str(HandRank rank) const;
 
+    // Get best available strategy: average_strategy if meaningful, else current_strategy
+    // Returns true if strategy has meaningful (non-uniform) data
+    bool get_strategy(const InfoSetData* data, float* out, int num_actions) const;
+
     // GTO feedback: returns the GTO probability for the chosen action
     double show_gto_feedback(const GameState& state, int player, const Action& chosen_action);
 

@@ -73,13 +73,15 @@ int cmd_build_abstraction() {
 int cmd_train() {
     CardAbstraction card_abs;
 
-    // Try to load precomputed abstraction
+    // Try to load precomputed abstraction, or build and save it
     std::string abs_path = std::string(config::CHECKPOINT_DIR) + "/abstraction.bin";
     if (std::filesystem::exists(abs_path)) {
         card_abs.load(abs_path);
     } else {
         log_info("No precomputed abstraction found, building...");
         card_abs.build(config::NUM_THREADS);
+        std::filesystem::create_directories(config::CHECKPOINT_DIR);
+        card_abs.save(abs_path);
     }
 
     ActionAbstraction action_abs;

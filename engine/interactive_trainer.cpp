@@ -248,6 +248,41 @@ InfoSetKey InteractiveTrainer::compute_key(const GameState& state, int player) c
                             state.action_history_hash());
 }
 
+// Returns true if the strategy has meaningful (non-uniform) data
+bool InteractiveTrainer::get_strategy(const InfoSetData* data, float* out, int num_actions) const {
+    // Try average strategy first (converged GTO)
+    data->average_strategy(out);
+
+    // Check if strategy sums are all equal (uninformative uniform)
+    bool avg_uniform = true;
+    if (data->num_actions > 1) {
+        float first = data->strategy_sum[0];
+        for (int a = 1; a < data->num_actions; ++a) {
+            if (std::abs(data->strategy_sum[a] - first) > 1e-3f) {
+                avg_uniform = false;
+                break;
+            }
+        }
+    }
+
+    if (!avg_uniform)
+        return true;  // Average strategy is meaningful
+
+    // Fall back to current_strategy (regret-matching)
+    data->current_strategy(out);
+
+    // Check if regrets are also all zero/uniform
+    bool has_regret = false;
+    for (int a = 0; a < data->num_actions; ++a) {
+        if (data->cumulative_regret[a] > 1e-3f) {
+            has_regret = true;
+            break;
+        }
+    }
+
+    return has_regret;
+}
+
 double InteractiveTrainer::show_gto_feedback(const GameState& state, int player,
                                              const Action& chosen_action) {
     auto actions = action_abs_.get_actions(state);
@@ -266,7 +301,14 @@ double InteractiveTrainer::show_gto_feedback(const GameState& state, int player,
     }
 
     float avg[InfoSetData::MAX_ACTIONS];
-    data->average_strategy(avg);
+    bool has_data = get_strategy(data, avg, num_actions);
+
+    if (!has_data) {
+        std::cout << DIM
+                  << "  (Insufficient training data for this spot - no reliable GTO strategy)"
+                  << RESET << "\n";
+        return 0.5;  // Neutral score
+    }
 
     // Find which action index matches the chosen action
     // Map player's concrete action to nearest abstract action
@@ -371,14 +413,30 @@ Action InteractiveTrainer::sample_opponent_action(const GameState& state, int pl
     const auto* data = blueprint_.find(key);
 
     if (!data) {
-        // No blueprint data: play uniformly
-        int idx = rng_.next_int(num_actions);
-        return actions[idx];
+        // No blueprint data — log for debugging
+        const char* pos = position_name(player, 0, config::NUM_PLAYERS);
+        std::cout << DIM << "  [debug] No blueprint for seat " << player << " bucket="
+                  << card_abs_.get_bucket(state.street(), state.players()[player].hole_cards[0],
+                                          state.players()[player].hole_cards[1],
+                                          state.board().data(), state.num_board_cards())
+                  << " hash=" << state.action_history_hash() << RESET << "\n";
+        // Default to check/fold
+        for (const auto& a : actions)
+            if (a.type == ActionType::CHECK)
+                return a;
+        return actions[0];
     }
 
-    float avg[InfoSetData::MAX_ACTIONS];
-    data->average_strategy(avg);
-    int idx = rng_.sample_action(avg, std::min(num_actions, static_cast<int>(data->num_actions)));
+    float strat[InfoSetData::MAX_ACTIONS];
+    bool has_data = get_strategy(data, strat, num_actions);
+    if (!has_data) {
+        // Insufficient data: check/fold
+        for (const auto& a : actions)
+            if (a.type == ActionType::CHECK)
+                return a;
+        return actions[0];
+    }
+    int idx = rng_.sample_action(strat, std::min(num_actions, static_cast<int>(data->num_actions)));
     if (idx >= num_actions)
         idx = num_actions - 1;
     return actions[idx];
